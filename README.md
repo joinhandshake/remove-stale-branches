@@ -1,3 +1,11 @@
+### **- This is a pinned, vetted fork of fpicalausa/remove-stale-branches, used internally to automate stale branch cleanup.**
+
+### **- Only use pinned SHAs to avoid drift.**
+
+### **- Maintained by the Backend Platform team.**
+
+
+
 # Remove Stale Branches
 
 This Github Action will identify stale branches and mark them for deletion after a set period.
