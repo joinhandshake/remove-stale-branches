@@ -84,8 +84,30 @@ inputs:
     required: false
   operations-per-run:
     description: >
-      Maximum number of stale branches to look at in any run of this action.
+      Maximum number of branches to mutate in any run of this action. Branches
+      that are already marked stale and are not old enough to delete do not
+      count toward this limit.
     default: "10"
+    required: false
+  operation-delay-ms:
+    description: >
+      Milliseconds to wait after each write operation, such as creating a stale
+      branch comment or deleting a branch/comment. Use this to stay below
+      GitHub secondary content-creation limits while still processing large
+      backlogs.
+    default: "0"
+    required: false
+  secondary-rate-limit-retries:
+    description: >
+      Number of times to retry a write operation after GitHub returns a
+      secondary rate limit response.
+    default: "0"
+    required: false
+  secondary-rate-limit-retry-ms:
+    description: >
+      Milliseconds to wait before retrying a write operation when GitHub returns
+      a secondary rate limit response without a retry-after header.
+    default: "60000"
     required: false
   ignore-unknown-authors:
     description: >

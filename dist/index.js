@@ -13009,7 +13009,7 @@ module.exports = {
 
 
 const { parseSetCookie } = __nccwpck_require__(8915)
-const { stringify, getHeadersList } = __nccwpck_require__(3834)
+const { stringify } = __nccwpck_require__(3834)
 const { webidl } = __nccwpck_require__(4222)
 const { Headers } = __nccwpck_require__(6349)
 
@@ -13085,14 +13085,13 @@ function getSetCookies (headers) {
 
   webidl.brandCheck(headers, Headers, { strict: false })
 
-  const cookies = getHeadersList(headers).cookies
+  const cookies = headers.getSetCookie()
 
   if (!cookies) {
     return []
   }
 
-  // In older versions of undici, cookies is a list of name:value.
-  return cookies.map((pair) => parseSetCookie(Array.isArray(pair) ? pair[1] : pair))
+  return cookies.map((pair) => parseSetCookie(pair))
 }
 
 /**
@@ -13520,14 +13519,15 @@ module.exports = {
 /***/ }),
 
 /***/ 3834:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+/***/ ((module) => {
 
 "use strict";
 
 
-const assert = __nccwpck_require__(2613)
-const { kHeadersList } = __nccwpck_require__(6443)
-
+/**
+ * @param {string} value
+ * @returns {boolean}
+ */
 function isCTLExcludingHtab (value) {
   if (value.length === 0) {
     return false
@@ -13788,31 +13788,13 @@ function stringify (cookie) {
   return out.join('; ')
 }
 
-let kHeadersListNode
-
-function getHeadersList (headers) {
-  if (headers[kHeadersList]) {
-    return headers[kHeadersList]
-  }
-
-  if (!kHeadersListNode) {
-    kHeadersListNode = Object.getOwnPropertySymbols(headers).find(
-      (symbol) => symbol.description === 'headers list'
-    )
-
-    assert(kHeadersListNode, 'Headers cannot be parsed')
-  }
-
-  const headersList = headers[kHeadersListNode]
-  assert(headersList)
-
-  return headersList
-}
-
 module.exports = {
   isCTLExcludingHtab,
-  stringify,
-  getHeadersList
+  validateCookieName,
+  validateCookiePath,
+  validateCookieValue,
+  toIMFDate,
+  stringify
 }
 
 
@@ -17816,6 +17798,7 @@ const {
   isValidHeaderName,
   isValidHeaderValue
 } = __nccwpck_require__(5523)
+const util = __nccwpck_require__(9023)
 const { webidl } = __nccwpck_require__(4222)
 const assert = __nccwpck_require__(2613)
 
@@ -18369,6 +18352,9 @@ Object.defineProperties(Headers.prototype, {
   [Symbol.toStringTag]: {
     value: 'Headers',
     configurable: true
+  },
+  [util.inspect.custom]: {
+    enumerable: false
   }
 })
 
@@ -27545,6 +27531,20 @@ class Pool extends PoolBase {
       ? { ...options.interceptors }
       : undefined
     this[kFactory] = factory
+
+    this.on('connectionError', (origin, targets, error) => {
+      // If a connection error occurs, we remove the client from the pool,
+      // and emit a connectionError event. They will not be re-used.
+      // Fixes https://github.com/nodejs/undici/issues/3895
+      for (const target of targets) {
+        // Do not use kRemoveClient here, as it will close the client,
+        // but the client cannot be closed in this state.
+        const idx = this[kClients].indexOf(target)
+        if (idx !== -1) {
+          this[kClients].splice(idx, 1)
+        }
+      }
+    })
   }
 
   [kGetDispatcher] () {
@@ -30041,6 +30041,13 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const github = __importStar(__nccwpck_require__(3228));
 const core = __importStar(__nccwpck_require__(7484));
 const removeStaleBranches_1 = __nccwpck_require__(4050);
+function getNonNegativeIntegerInput(inputName) {
+    const value = Number.parseInt(core.getInput(inputName, { required: false }), 10);
+    if (Number.isNaN(value) || value < 0) {
+        throw new Error(`${inputName} must be a non-negative integer`);
+    }
+    return value;
+}
 function run() {
     return __awaiter(this, void 0, void 0, function* () {
         var _a;
@@ -30075,10 +30082,15 @@ function run() {
         const daysBeforeBranchStale = Number.parseInt(core.getInput("days-before-branch-stale", { required: false }));
         const daysBeforeBranchDelete = Number.parseInt(core.getInput("days-before-branch-delete", { required: false }));
         const operationsPerRun = Number.parseInt(core.getInput("operations-per-run", { required: false }));
+        const operationDelayMs = getNonNegativeIntegerInput("operation-delay-ms");
+        const secondaryRateLimitRetries = getNonNegativeIntegerInput("secondary-rate-limit-retries");
+        const secondaryRateLimitRetryMs = getNonNegativeIntegerInput("secondary-rate-limit-retry-ms");
         const defaultRecipient = (_a = core.getInput("default-recipient", { required: false })) !== null && _a !== void 0 ? _a : "";
         const remapAuthorsInput = core.getInput("remap-authors", { required: false });
         const remapAuthors = remapAuthorsInput ? JSON.parse(remapAuthorsInput) : {};
-        if (!remapAuthors || Array.isArray(remapAuthors) || typeof remapAuthors !== 'object') {
+        if (!remapAuthors ||
+            Array.isArray(remapAuthors) ||
+            typeof remapAuthors !== "object") {
             throw new Error("unexpected input: remap-authors is not a json object");
         }
         const ignoreUnknownAuthors = core.getBooleanInput("ignore-unknown-authors", {
@@ -30097,6 +30109,9 @@ function run() {
             protectedOrganizationName,
             exemptProtectedBranches,
             operationsPerRun,
+            operationDelayMs,
+            secondaryRateLimitRetries,
+            secondaryRateLimitRetryMs,
             defaultRecipient,
             remapAuthors,
             ignoreUnknownAuthors,
@@ -30316,6 +30331,7 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.countsTowardOperationsLimit = countsTowardOperationsLimit;
 exports.removeStaleBranches = removeStaleBranches;
 const formatISO_1 = __nccwpck_require__(8871);
 const subDays_1 = __nccwpck_require__(4276);
@@ -30323,6 +30339,61 @@ const commitComments_1 = __nccwpck_require__(2504);
 const readBranches_1 = __nccwpck_require__(1899);
 const core = __importStar(__nccwpck_require__(7484));
 const date_fns_1 = __nccwpck_require__(4367);
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function isSecondaryRateLimitError(error) {
+    var _a, _b;
+    const requestError = error;
+    const message = (_b = (_a = requestError.message) === null || _a === void 0 ? void 0 : _a.toLowerCase()) !== null && _b !== void 0 ? _b : "";
+    return ((requestError.status === 403 || requestError.status === 429) &&
+        message.includes("secondary rate limit"));
+}
+function getRetryAfterMs(error) {
+    var _a, _b;
+    const requestError = error;
+    const retryAfterHeader = (_b = (_a = requestError.response) === null || _a === void 0 ? void 0 : _a.headers) === null || _b === void 0 ? void 0 : _b["retry-after"];
+    if (retryAfterHeader === undefined) {
+        return null;
+    }
+    const retryAfterSeconds = Number.parseInt(String(retryAfterHeader), 10);
+    if (Number.isNaN(retryAfterSeconds) || retryAfterSeconds < 0) {
+        return null;
+    }
+    return retryAfterSeconds * 1000;
+}
+function waitAfterWriteOperation(params) {
+    return __awaiter(this, void 0, void 0, function* () {
+        if (params.operationDelayMs <= 0) {
+            return;
+        }
+        console.log(`-> waiting ${params.operationDelayMs}ms before the next write operation`);
+        yield sleep(params.operationDelayMs);
+    });
+}
+function runWriteOperation(params, operation) {
+    return __awaiter(this, void 0, void 0, function* () {
+        var _a;
+        let retries = 0;
+        while (true) {
+            try {
+                const result = yield operation();
+                yield waitAfterWriteOperation(params);
+                return result;
+            }
+            catch (error) {
+                if (!isSecondaryRateLimitError(error) ||
+                    retries >= params.secondaryRateLimitRetries) {
+                    throw error;
+                }
+                retries++;
+                const retryDelayMs = (_a = getRetryAfterMs(error)) !== null && _a !== void 0 ? _a : params.secondaryRateLimitRetryMs;
+                console.log(`-> hit a secondary rate limit, retrying in ${retryDelayMs}ms (${retries}/${params.secondaryRateLimitRetries})`);
+                yield sleep(retryDelayMs);
+            }
+        }
+    });
+}
 function processBranch(plan, branch, commitComments, params) {
     return __awaiter(this, void 0, void 0, function* () {
         var _a, _b, _c;
@@ -30352,11 +30423,11 @@ function processBranch(plan, branch, commitComments, params) {
                 return;
             }
             const commentTag = "stale:" + branch.branchName;
-            return yield commitComments.addCommitComments({
+            return yield runWriteOperation(params, () => commitComments.addCommitComments({
                 commentTag,
                 commitSHA: branch.commitId,
                 commentBody: commitComments_1.TaggedCommitComments.formatCommentMessage(params.staleCommentMessage, branch, params, params.repo, author),
-            });
+            }));
         }
         console.log("-> branch was marked stale on " + (0, formatISO_1.formatISO)(plan.lastCommentTime));
         if (plan.action === "keep stale") {
@@ -30370,12 +30441,15 @@ function processBranch(plan, branch, commitComments, params) {
                 console.log("-> (doing nothing because of dry run flag)");
                 return;
             }
-            commitComments.deleteBranch(branch);
-            plan.comments.forEach((c) => {
-                commitComments.deleteCommitComments({ commentId: c.id });
-            });
+            yield runWriteOperation(params, () => commitComments.deleteBranch(branch));
+            for (const comment of plan.comments) {
+                yield runWriteOperation(params, () => commitComments.deleteCommitComments({ commentId: comment.id }));
+            }
         }
     });
+}
+function countsTowardOperationsLimit(plan) {
+    return plan.action === "mark stale" || plan.action === "remove";
 }
 function skip(reason) {
     return {
@@ -30411,10 +30485,12 @@ function planBranchAction(now, branch, filters, commitComments, params) {
             filters.authorsRegex.test(branch.author.username)) {
             return skip(`author ${branch.author.username} is exempted`);
         }
-        if (filters.allowedBranchesRegex && !filters.allowedBranchesRegex.test(branch.branchName)) {
+        if (filters.allowedBranchesRegex &&
+            !filters.allowedBranchesRegex.test(branch.branchName)) {
             return skip(`branch ${branch.branchName} is outside of branch selection`);
         }
-        if (filters.deniedBranchesRegex && filters.deniedBranchesRegex.test(branch.branchName)) {
+        if (filters.deniedBranchesRegex &&
+            filters.deniedBranchesRegex.test(branch.branchName)) {
             return skip(`branch ${branch.branchName} is exempted`);
         }
         if (filters.exemptProtectedBranches && branch.isProtected) {
@@ -30493,7 +30569,7 @@ function removeStaleBranches(octokit, params) {
             exemptProtectedBranches: params.exemptProtectedBranches,
         };
         const commitComments = new commitComments_1.TaggedCommitComments(repo, octokit, headers);
-        let operations = 0;
+        let mutatedBranches = 0;
         let summary = {
             remove: 0,
             "mark stale": 0,
@@ -30523,15 +30599,15 @@ function removeStaleBranches(octokit, params) {
                 core.startGroup(`${icons[plan.action]} branch ${branch.branchName}`);
                 try {
                     yield processBranch(plan, branch, commitComments, params);
-                    if (plan.action !== "skip" && plan.action != "keep stale") {
-                        operations++;
+                    if (countsTowardOperationsLimit(plan)) {
+                        mutatedBranches++;
                     }
                 }
                 finally {
                     core.endGroup();
                 }
-                if (operations >= params.operationsPerRun) {
-                    console.log("Stopping after " + operations + " operations");
+                if (mutatedBranches >= params.operationsPerRun) {
+                    console.log("Stopping after " + mutatedBranches + " mutated branches");
                     return;
                 }
             }

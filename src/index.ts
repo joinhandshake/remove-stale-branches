@@ -2,17 +2,30 @@ import * as github from "@actions/github";
 import * as core from "@actions/core";
 import { removeStaleBranches } from "./removeStaleBranches";
 
+function getNonNegativeIntegerInput(inputName: string): number {
+  const value = Number.parseInt(
+    core.getInput(inputName, { required: false }),
+    10,
+  );
+
+  if (Number.isNaN(value) || value < 0) {
+    throw new Error(`${inputName} must be a non-negative integer`);
+  }
+
+  return value;
+}
+
 async function run(): Promise<void> {
   const githubToken = core.getInput("github-token", { required: true });
   const octokit = github.getOctokit(githubToken);
   const isDryRun = core.getBooleanInput("dry-run", { required: false });
   const repositoryInput = core.getInput("repository", { required: false });
   const repo = repositoryInput
-  ? {
-      owner: repositoryInput.split("/")[0],
-      repo: repositoryInput.split("/")[1],
-    }
-  : github.context.repo;
+    ? {
+        owner: repositoryInput.split("/")[0],
+        repo: repositoryInput.split("/")[1],
+      }
+    : github.context.repo;
   const protectedOrganizationName = core.getInput("exempt-organization", {
     required: false,
   });
@@ -29,19 +42,26 @@ async function run(): Promise<void> {
     "exempt-protected-branches",
     {
       required: false,
-    }
+    },
   );
   const staleCommentMessage = core.getInput("stale-branch-message", {
     required: false,
   });
   const daysBeforeBranchStale = Number.parseInt(
-    core.getInput("days-before-branch-stale", { required: false })
+    core.getInput("days-before-branch-stale", { required: false }),
   );
   const daysBeforeBranchDelete = Number.parseInt(
-    core.getInput("days-before-branch-delete", { required: false })
+    core.getInput("days-before-branch-delete", { required: false }),
   );
   const operationsPerRun = Number.parseInt(
-    core.getInput("operations-per-run", { required: false })
+    core.getInput("operations-per-run", { required: false }),
+  );
+  const operationDelayMs = getNonNegativeIntegerInput("operation-delay-ms");
+  const secondaryRateLimitRetries = getNonNegativeIntegerInput(
+    "secondary-rate-limit-retries",
+  );
+  const secondaryRateLimitRetryMs = getNonNegativeIntegerInput(
+    "secondary-rate-limit-retry-ms",
   );
 
   const defaultRecipient =
@@ -49,8 +69,12 @@ async function run(): Promise<void> {
 
   const remapAuthorsInput = core.getInput("remap-authors", { required: false });
   const remapAuthors = remapAuthorsInput ? JSON.parse(remapAuthorsInput) : {};
-  if (!remapAuthors || Array.isArray(remapAuthors) || typeof remapAuthors !== 'object') {
-     throw new Error("unexpected input: remap-authors is not a json object")
+  if (
+    !remapAuthors ||
+    Array.isArray(remapAuthors) ||
+    typeof remapAuthors !== "object"
+  ) {
+    throw new Error("unexpected input: remap-authors is not a json object");
   }
 
   const ignoreUnknownAuthors = core.getBooleanInput("ignore-unknown-authors", {
@@ -59,7 +83,7 @@ async function run(): Promise<void> {
 
   const ignoreBranchesWithOpenPRs = core.getBooleanInput(
     "ignore-branches-with-open-prs",
-    { required: false }
+    { required: false },
   );
 
   return removeStaleBranches(octokit, {
@@ -74,6 +98,9 @@ async function run(): Promise<void> {
     protectedOrganizationName,
     exemptProtectedBranches,
     operationsPerRun,
+    operationDelayMs,
+    secondaryRateLimitRetries,
+    secondaryRateLimitRetryMs,
     defaultRecipient,
     remapAuthors,
     ignoreUnknownAuthors,

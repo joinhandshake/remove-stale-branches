@@ -29,6 +29,9 @@ export type Params = {
   protectedOrganizationName?: string;
   exemptProtectedBranches: boolean;
   operationsPerRun: number;
+  operationDelayMs: number;
+  secondaryRateLimitRetries: number;
+  secondaryRateLimitRetryMs: number;
   repo: Repo;
   ignoreUnknownAuthors: boolean;
   defaultRecipient: string | null;
