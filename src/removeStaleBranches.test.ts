@@ -1,6 +1,7 @@
+import type { Octokit } from "@octokit/core";
 import { readBranches } from "./readBranches";
 import { removeStaleBranches } from "./removeStaleBranches";
-import { Branch, Params } from "./types";
+import type { Branch, Params } from "./types";
 
 jest.mock("./readBranches", () => ({
   readBranches: jest.fn(),
@@ -66,8 +67,7 @@ describe("removeStaleBranches", () => {
     const request = jest.fn(
       async (route: string, options: { commit_sha?: string }) => {
         if (
-          route ===
-          "GET /repos/{owner}/{repo}/commits/{commit_sha}/comments"
+          route === "GET /repos/{owner}/{repo}/commits/{commit_sha}/comments"
         ) {
           if (options.commit_sha === "sha-1") {
             return {
@@ -85,8 +85,7 @@ describe("removeStaleBranches", () => {
         }
 
         if (
-          route ===
-          "POST /repos/{owner}/{repo}/commits/{commit_sha}/comments"
+          route === "POST /repos/{owner}/{repo}/commits/{commit_sha}/comments"
         ) {
           return { data: { id: 2 } };
         }
@@ -95,7 +94,7 @@ describe("removeStaleBranches", () => {
       },
     );
 
-    await removeStaleBranches({ request } as any, params());
+    await removeStaleBranches({ request } as unknown as Octokit, params());
 
     expect(request).toHaveBeenCalledWith(
       "POST /repos/{owner}/{repo}/commits/{commit_sha}/comments",

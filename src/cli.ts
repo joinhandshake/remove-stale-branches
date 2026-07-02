@@ -1,8 +1,8 @@
+import process from "node:process";
 import { Octokit } from "@octokit/core";
 import { removeStaleBranches } from "./removeStaleBranches";
-import process from "process";
 
-let octokit = new Octokit({
+const octokit = new Octokit({
   options: {
     auth: process.env.GITHUB_TOKEN,
   },

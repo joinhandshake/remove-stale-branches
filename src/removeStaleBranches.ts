@@ -1,11 +1,11 @@
-import { Octokit } from "@octokit/core";
+import * as core from "@actions/core";
+import type { Octokit } from "@octokit/core";
+import { addDays } from "date-fns";
 import { formatISO } from "date-fns/formatISO";
 import { subDays } from "date-fns/subDays";
 import { TaggedCommitComments } from "./commitComments";
-import { Branch, Params } from "./types";
 import { readBranches } from "./readBranches";
-import * as core from "@actions/core";
-import { addDays } from "date-fns";
+import type { Branch, Params } from "./types";
 
 type BranchFilters = {
   staleCutoff: number;
@@ -100,10 +100,9 @@ async function processBranch(
   params: Params,
 ) {
   console.log(
-    "-> branch was last updated by " +
-      (branch.author?.username || branch.author?.email || "(unknown user)") +
-      " on " +
-      formatISO(branch.date),
+    `-> branch was last updated by ${
+      branch.author?.username || branch.author?.email || "(unknown user)"
+    } on ${formatISO(branch.date)}`,
   );
 
   if (plan.action === "skip") {
@@ -113,7 +112,7 @@ async function processBranch(
 
   if (plan.action === "mark stale") {
     let author = "";
-    console.log("-> branch will be removed on " + formatISO(plan.cutoffTime));
+    console.log(`-> branch will be removed on ${formatISO(plan.cutoffTime)}`);
     if (!branch.author?.username) {
       author = params.defaultRecipient || "";
     } else if (params.remapAuthors[branch.author.username]) {
@@ -121,14 +120,14 @@ async function processBranch(
     } else {
       author = branch.author.username;
     }
-    console.log("-> marking branch as stale (notifying: " + author + ")");
+    console.log(`-> marking branch as stale (notifying: ${author})`);
 
     if (params.isDryRun) {
       console.log("-> (doing nothing because of dry run flag)");
       return;
     }
 
-    const commentTag = "stale:" + branch.branchName;
+    const commentTag = `stale:${branch.branchName}`;
     return await runWriteOperation(params, () =>
       commitComments.addCommitComments({
         commentTag,
@@ -145,17 +144,17 @@ async function processBranch(
   }
 
   console.log(
-    "-> branch was marked stale on " + formatISO(plan.lastCommentTime),
+    `-> branch was marked stale on ${formatISO(plan.lastCommentTime)}`,
   );
 
   if (plan.action === "keep stale") {
-    console.log("-> branch will be removed on " + formatISO(plan.cutoffTime));
+    console.log(`-> branch will be removed on ${formatISO(plan.cutoffTime)}`);
     return;
   }
 
   if (plan.action === "remove") {
     console.log(
-      "-> branch was slated for deletion on " + formatISO(plan.cutoffTime),
+      `-> branch was slated for deletion on ${formatISO(plan.cutoffTime)}`,
     );
     console.log("-> removing branch");
     if (params.isDryRun) {
@@ -201,7 +200,7 @@ async function getCommitCommentsForBranch(
   commitComments: TaggedCommitComments,
   branch: Branch,
 ): Promise<Comment[]> {
-  const commentTag = "stale:" + branch.branchName;
+  const commentTag = `stale:${branch.branchName}`;
   return await commitComments.getCommitCommentsWithTag({
     commentTag,
     commitSHA: branch.commitId,
@@ -248,10 +247,7 @@ async function planBranchAction(
   ) {
     return skip(`branch ${branch.branchName} is outside of branch selection`);
   }
-  if (
-    filters.deniedBranchesRegex &&
-    filters.deniedBranchesRegex.test(branch.branchName)
-  ) {
+  if (filters.deniedBranchesRegex?.test(branch.branchName)) {
     return skip(`branch ${branch.branchName} is exempted`);
   }
 
@@ -268,7 +264,7 @@ async function planBranchAction(
   }
 
   const comments = await getCommitCommentsForBranch(commitComments, branch);
-  if (comments.length == 0 && params.daysBeforeBranchDelete !== 0) {
+  if (comments.length === 0 && params.daysBeforeBranchDelete !== 0) {
     return {
       action: "mark stale",
       cutoffTime: addDays(now, params.daysBeforeBranchDelete).getTime(),
@@ -313,7 +309,7 @@ function logActionRunConfiguration(
     `Branches updated before ${formatISO(staleCutoff)} will be marked as stale`,
   );
 
-  if (params.daysBeforeBranchDelete == 0) {
+  if (params.daysBeforeBranchDelete === 0) {
     console.log(
       "Branches will be instantly removed due to days-before-branch-delete being set to 0.",
     );
@@ -331,7 +327,7 @@ export async function removeStaleBranches(
   const headers: { [key: string]: string } = params.githubToken
     ? {
         "Content-Type": "application/json",
-        Authorization: "bearer " + params.githubToken,
+        Authorization: `bearer ${params.githubToken}`,
       }
     : {};
 
@@ -359,7 +355,7 @@ export async function removeStaleBranches(
   };
   const commitComments = new TaggedCommitComments(repo, octokit, headers);
   let mutatedBranches = 0;
-  let summary: Record<Plan["action"], number> & { scanned: number } = {
+  const summary: Record<Plan["action"], number> & { scanned: number } = {
     remove: 0,
     "mark stale": 0,
     "keep stale": 0,
@@ -410,7 +406,7 @@ export async function removeStaleBranches(
     }
 
     if (mutatedBranches >= params.operationsPerRun) {
-      console.log("Stopping after " + mutatedBranches + " mutated branches");
+      console.log(`Stopping after ${mutatedBranches} mutated branches`);
       return;
     }
   }

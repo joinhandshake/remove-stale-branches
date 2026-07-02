@@ -1,5 +1,5 @@
-import * as github from "@actions/github";
 import * as core from "@actions/core";
+import * as github from "@actions/github";
 import { removeStaleBranches } from "./removeStaleBranches";
 
 function getNonNegativeIntegerInput(inputName: string): number {
@@ -49,12 +49,15 @@ async function run(): Promise<void> {
   });
   const daysBeforeBranchStale = Number.parseInt(
     core.getInput("days-before-branch-stale", { required: false }),
+    10,
   );
   const daysBeforeBranchDelete = Number.parseInt(
     core.getInput("days-before-branch-delete", { required: false }),
+    10,
   );
   const operationsPerRun = Number.parseInt(
     core.getInput("operations-per-run", { required: false }),
+    10,
   );
   const operationDelayMs = getNonNegativeIntegerInput("operation-delay-ms");
   const secondaryRateLimitRetries = getNonNegativeIntegerInput(

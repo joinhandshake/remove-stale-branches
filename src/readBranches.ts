@@ -1,5 +1,5 @@
-import { Octokit } from "@octokit/core";
-import { Branch, Repo } from "./types";
+import type { Octokit } from "@octokit/core";
+import type { Branch, Repo } from "./types";
 
 const GRAPHQL_QUERY = `query ($repo: String!, $owner: String!, $after: String) {
   repository(name: $repo, owner: $owner) {
@@ -107,9 +107,9 @@ type Page<N, E> = {
 
 type GitObjectID = string;
 
-type Blob = {};
-type Tag = {};
-type Tree = {};
+type Blob = Record<string, never>;
+type Tag = Record<string, never>;
+type Tree = Record<string, never>;
 
 type ISOTimeStamp = string;
 
@@ -146,7 +146,7 @@ type Ref = {
     nodes: [
       {
         state: "OPEN";
-      }
+      },
     ];
   };
   prefix: string;
@@ -169,7 +169,7 @@ export async function* readBranches(
   octokit: Octokit,
   headers: { [key: string]: string },
   repo: Repo,
-  organization?: string
+  organization?: string,
 ): AsyncGenerator<Branch> {
   let pagination: PageInfo = {
     hasNextPage: true,
@@ -192,7 +192,7 @@ export async function* readBranches(
       },
     } = await octokit.graphql<{ repository: Repository }>(
       organization ? GRAPHQL_QUERY_WITH_ORG : GRAPHQL_QUERY,
-      params
+      params,
     );
 
     for (let i = 0; i < edges.length; ++i) {

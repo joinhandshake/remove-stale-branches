@@ -8,6 +8,11 @@
   "license": "MIT",
   "scripts": {
     "build": "ncc build src/index.ts",
+    "check:bundle": "npm run build && git diff --exit-code -- dist/index.js",
+    "check:source": "biome check src",
+    "format": "biome format --write src",
+    "format:check": "biome format src",
+    "lint": "biome lint src",
     "test": "jest",
     "prettier:write": "prettier --write \"src/*.ts\"",
     "cli": "ts-node src/cli.ts"
@@ -18,6 +23,7 @@
     "date-fns": "^4.1.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.2",
     "@types/jest": "^29.5.14",
     "@types/node": "^24.13.2",
     "@vercel/ncc": "^0.38.3",
