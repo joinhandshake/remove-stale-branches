@@ -13009,7 +13009,7 @@ module.exports = {
 
 
 const { parseSetCookie } = __nccwpck_require__(8915)
-const { stringify, getHeadersList } = __nccwpck_require__(3834)
+const { stringify } = __nccwpck_require__(3834)
 const { webidl } = __nccwpck_require__(4222)
 const { Headers } = __nccwpck_require__(6349)
 
@@ -13085,14 +13085,13 @@ function getSetCookies (headers) {
 
   webidl.brandCheck(headers, Headers, { strict: false })
 
-  const cookies = getHeadersList(headers).cookies
+  const cookies = headers.getSetCookie()
 
   if (!cookies) {
     return []
   }
 
-  // In older versions of undici, cookies is a list of name:value.
-  return cookies.map((pair) => parseSetCookie(Array.isArray(pair) ? pair[1] : pair))
+  return cookies.map((pair) => parseSetCookie(pair))
 }
 
 /**
@@ -13520,14 +13519,15 @@ module.exports = {
 /***/ }),
 
 /***/ 3834:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+/***/ ((module) => {
 
 "use strict";
 
 
-const assert = __nccwpck_require__(2613)
-const { kHeadersList } = __nccwpck_require__(6443)
-
+/**
+ * @param {string} value
+ * @returns {boolean}
+ */
 function isCTLExcludingHtab (value) {
   if (value.length === 0) {
     return false
@@ -13788,31 +13788,13 @@ function stringify (cookie) {
   return out.join('; ')
 }
 
-let kHeadersListNode
-
-function getHeadersList (headers) {
-  if (headers[kHeadersList]) {
-    return headers[kHeadersList]
-  }
-
-  if (!kHeadersListNode) {
-    kHeadersListNode = Object.getOwnPropertySymbols(headers).find(
-      (symbol) => symbol.description === 'headers list'
-    )
-
-    assert(kHeadersListNode, 'Headers cannot be parsed')
-  }
-
-  const headersList = headers[kHeadersListNode]
-  assert(headersList)
-
-  return headersList
-}
-
 module.exports = {
   isCTLExcludingHtab,
-  stringify,
-  getHeadersList
+  validateCookieName,
+  validateCookiePath,
+  validateCookieValue,
+  toIMFDate,
+  stringify
 }
 
 
@@ -17816,6 +17798,7 @@ const {
   isValidHeaderName,
   isValidHeaderValue
 } = __nccwpck_require__(5523)
+const util = __nccwpck_require__(9023)
 const { webidl } = __nccwpck_require__(4222)
 const assert = __nccwpck_require__(2613)
 
@@ -18369,6 +18352,9 @@ Object.defineProperties(Headers.prototype, {
   [Symbol.toStringTag]: {
     value: 'Headers',
     configurable: true
+  },
+  [util.inspect.custom]: {
+    enumerable: false
   }
 })
 
@@ -27545,6 +27531,20 @@ class Pool extends PoolBase {
       ? { ...options.interceptors }
       : undefined
     this[kFactory] = factory
+
+    this.on('connectionError', (origin, targets, error) => {
+      // If a connection error occurs, we remove the client from the pool,
+      // and emit a connectionError event. They will not be re-used.
+      // Fixes https://github.com/nodejs/undici/issues/3895
+      for (const target of targets) {
+        // Do not use kRemoveClient here, as it will close the client,
+        // but the client cannot be closed in this state.
+        const idx = this[kClients].indexOf(target)
+        if (idx !== -1) {
+          this[kClients].splice(idx, 1)
+        }
+      }
+    })
   }
 
   [kGetDispatcher] () {
@@ -29916,30 +29916,23 @@ function wrappy (fn, cb) {
 /***/ }),
 
 /***/ 2504:
-/***/ (function(__unused_webpack_module, exports) {
+/***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.TaggedCommitComments = void 0;
 class TaggedCommitComments {
+    repo;
+    octokit;
+    headers;
     constructor(repo, octokit, headers) {
         this.repo = repo;
         this.octokit = octokit;
         this.headers = headers;
     }
     static formatCommentMessage(messageTemplate, branch, config, repo, username) {
-        var _a;
-        const serverUrl = (_a = process.env.GITHUB_SERVER_URL) !== null && _a !== void 0 ? _a : "https://github.com";
+        const serverUrl = process.env.GITHUB_SERVER_URL ?? "https://github.com";
         return messageTemplate
             .replace(/[{]branchName[}]/g, branch.branchName)
             .replace(/[{]branchUrl[}]/g, `${serverUrl}/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.repo)}/tree/${encodeURIComponent(branch.branchName)}`)
@@ -29949,40 +29942,52 @@ class TaggedCommitComments {
             .replace(/[{]daysBeforeBranchStale[}]/g, String(config.daysBeforeBranchStale))
             .replace(/[{]daysBeforeBranchDelete[}]/g, String(config.daysBeforeBranchDelete));
     }
-    getCommitCommentsWithTag(_a) {
-        return __awaiter(this, arguments, void 0, function* ({ commentTag, commitSHA, }) {
-            const messages = (yield this.octokit.request("GET /repos/{owner}/{repo}/commits/{commit_sha}/comments", Object.assign(Object.assign({ headers: this.headers }, this.repo), { commit_sha: commitSHA }))).data;
-            return messages.filter((comment) => comment.body.startsWith("[" + commentTag + "]"));
+    async getCommitCommentsWithTag({ commentTag, commitSHA, }) {
+        const messages = (await this.octokit.request("GET /repos/{owner}/{repo}/commits/{commit_sha}/comments", {
+            headers: this.headers,
+            ...this.repo,
+            commit_sha: commitSHA,
+        })).data;
+        return messages.filter((comment) => comment.body.startsWith(`[${commentTag}]`));
+    }
+    async addCommitComments({ commentTag, commentBody, commitSHA, }) {
+        const body = `[${commentTag}]\r\n\r\n${commentBody}`;
+        await this.octokit.request("POST /repos/{owner}/{repo}/commits/{commit_sha}/comments", {
+            headers: this.headers,
+            ...this.repo,
+            commit_sha: commitSHA,
+            body,
         });
     }
-    addCommitComments(_a) {
-        return __awaiter(this, arguments, void 0, function* ({ commentTag, commentBody, commitSHA, }) {
-            const body = `[${commentTag}]\r\n\r\n${commentBody}`;
-            yield this.octokit.request("POST /repos/{owner}/{repo}/commits/{commit_sha}/comments", Object.assign(Object.assign({ headers: this.headers }, this.repo), { commit_sha: commitSHA, body }));
+    async deleteCommitComments({ commentId }) {
+        return this.octokit.request("DELETE /repos/{owner}/{repo}/comments/{comment_id}", {
+            headers: this.headers,
+            ...this.repo,
+            comment_id: commentId,
         });
     }
-    deleteCommitComments(_a) {
-        return __awaiter(this, arguments, void 0, function* ({ commentId }) {
-            return this.octokit.request("DELETE /repos/{owner}/{repo}/comments/{comment_id}", Object.assign(Object.assign({ headers: this.headers }, this.repo), { comment_id: commentId }));
+    async getBranch(branch) {
+        const ref = branch.prefix.replace(/^refs\//, "") + branch.branchName;
+        return this.octokit.request("GET /repos/{owner}/{repo}/git/refs/{ref}", {
+            headers: this.headers,
+            ...this.repo,
+            ref,
         });
     }
-    getBranch(branch) {
-        return __awaiter(this, void 0, void 0, function* () {
-            const ref = branch.prefix.replace(/^refs\//, "") + branch.branchName;
-            return this.octokit.request("GET /repos/{owner}/{repo}/git/refs/{ref}", Object.assign(Object.assign({ headers: this.headers }, this.repo), { ref }));
+    async deleteBranch(branch) {
+        const ref = branch.prefix.replace(/^refs\//, "") + branch.branchName;
+        return this.octokit.request("DELETE /repos/{owner}/{repo}/git/refs/{ref}", {
+            headers: this.headers,
+            ...this.repo,
+            ref,
         });
     }
-    deleteBranch(branch) {
-        return __awaiter(this, void 0, void 0, function* () {
-            const ref = branch.prefix.replace(/^refs\//, "") + branch.branchName;
-            return this.octokit.request("DELETE /repos/{owner}/{repo}/git/refs/{ref}", Object.assign(Object.assign({ headers: this.headers }, this.repo), { ref }));
+    async getProtectedBranches() {
+        const { data } = await this.octokit.request("GET /repos/{owner}/{repo}/branches?protected=true", {
+            headers: this.headers,
+            ...this.repo,
         });
-    }
-    getProtectedBranches() {
-        return __awaiter(this, void 0, void 0, function* () {
-            const { data } = yield this.octokit.request("GET /repos/{owner}/{repo}/branches?protected=true", Object.assign({ headers: this.headers }, this.repo));
-            return data;
-        });
+        return data;
     }
 }
 exports.TaggedCommitComments = TaggedCommitComments;
@@ -30028,80 +30033,83 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-const github = __importStar(__nccwpck_require__(3228));
 const core = __importStar(__nccwpck_require__(7484));
+const github = __importStar(__nccwpck_require__(3228));
 const removeStaleBranches_1 = __nccwpck_require__(4050);
-function run() {
-    return __awaiter(this, void 0, void 0, function* () {
-        var _a;
-        const githubToken = core.getInput("github-token", { required: true });
-        const octokit = github.getOctokit(githubToken);
-        const isDryRun = core.getBooleanInput("dry-run", { required: false });
-        const repositoryInput = core.getInput("repository", { required: false });
-        const repo = repositoryInput
-            ? {
-                owner: repositoryInput.split("/")[0],
-                repo: repositoryInput.split("/")[1],
-            }
-            : github.context.repo;
-        const protectedOrganizationName = core.getInput("exempt-organization", {
-            required: false,
-        });
-        const selectedBranchesRegex = core.getInput("restrict-branches-regex", {
-            required: false,
-        });
-        const protectedBranchesRegex = core.getInput("exempt-branches-regex", {
-            required: false,
-        });
-        const protectedAuthorsRegex = core.getInput("exempt-authors-regex", {
-            required: false,
-        });
-        const exemptProtectedBranches = core.getBooleanInput("exempt-protected-branches", {
-            required: false,
-        });
-        const staleCommentMessage = core.getInput("stale-branch-message", {
-            required: false,
-        });
-        const daysBeforeBranchStale = Number.parseInt(core.getInput("days-before-branch-stale", { required: false }));
-        const daysBeforeBranchDelete = Number.parseInt(core.getInput("days-before-branch-delete", { required: false }));
-        const operationsPerRun = Number.parseInt(core.getInput("operations-per-run", { required: false }));
-        const defaultRecipient = (_a = core.getInput("default-recipient", { required: false })) !== null && _a !== void 0 ? _a : "";
-        const remapAuthorsInput = core.getInput("remap-authors", { required: false });
-        const remapAuthors = remapAuthorsInput ? JSON.parse(remapAuthorsInput) : {};
-        if (!remapAuthors || Array.isArray(remapAuthors) || typeof remapAuthors !== 'object') {
-            throw new Error("unexpected input: remap-authors is not a json object");
+function getNonNegativeIntegerInput(inputName) {
+    const value = Number.parseInt(core.getInput(inputName, { required: false }), 10);
+    if (Number.isNaN(value) || value < 0) {
+        throw new Error(`${inputName} must be a non-negative integer`);
+    }
+    return value;
+}
+async function run() {
+    const githubToken = core.getInput("github-token", { required: true });
+    const octokit = github.getOctokit(githubToken);
+    const isDryRun = core.getBooleanInput("dry-run", { required: false });
+    const repositoryInput = core.getInput("repository", { required: false });
+    const repo = repositoryInput
+        ? {
+            owner: repositoryInput.split("/")[0],
+            repo: repositoryInput.split("/")[1],
         }
-        const ignoreUnknownAuthors = core.getBooleanInput("ignore-unknown-authors", {
-            required: false,
-        });
-        const ignoreBranchesWithOpenPRs = core.getBooleanInput("ignore-branches-with-open-prs", { required: false });
-        return (0, removeStaleBranches_1.removeStaleBranches)(octokit, {
-            isDryRun,
-            repo,
-            daysBeforeBranchStale,
-            daysBeforeBranchDelete,
-            staleCommentMessage,
-            selectedBranchesRegex,
-            protectedBranchesRegex,
-            protectedAuthorsRegex,
-            protectedOrganizationName,
-            exemptProtectedBranches,
-            operationsPerRun,
-            defaultRecipient,
-            remapAuthors,
-            ignoreUnknownAuthors,
-            ignoreBranchesWithOpenPRs,
-        });
+        : github.context.repo;
+    const protectedOrganizationName = core.getInput("exempt-organization", {
+        required: false,
+    });
+    const selectedBranchesRegex = core.getInput("restrict-branches-regex", {
+        required: false,
+    });
+    const protectedBranchesRegex = core.getInput("exempt-branches-regex", {
+        required: false,
+    });
+    const protectedAuthorsRegex = core.getInput("exempt-authors-regex", {
+        required: false,
+    });
+    const exemptProtectedBranches = core.getBooleanInput("exempt-protected-branches", {
+        required: false,
+    });
+    const staleCommentMessage = core.getInput("stale-branch-message", {
+        required: false,
+    });
+    const daysBeforeBranchStale = Number.parseInt(core.getInput("days-before-branch-stale", { required: false }), 10);
+    const daysBeforeBranchDelete = Number.parseInt(core.getInput("days-before-branch-delete", { required: false }), 10);
+    const operationsPerRun = Number.parseInt(core.getInput("operations-per-run", { required: false }), 10);
+    const operationDelayMs = getNonNegativeIntegerInput("operation-delay-ms");
+    const secondaryRateLimitRetries = getNonNegativeIntegerInput("secondary-rate-limit-retries");
+    const secondaryRateLimitRetryMs = getNonNegativeIntegerInput("secondary-rate-limit-retry-ms");
+    const defaultRecipient = core.getInput("default-recipient", { required: false }) ?? "";
+    const remapAuthorsInput = core.getInput("remap-authors", { required: false });
+    const remapAuthors = remapAuthorsInput ? JSON.parse(remapAuthorsInput) : {};
+    if (!remapAuthors ||
+        Array.isArray(remapAuthors) ||
+        typeof remapAuthors !== "object") {
+        throw new Error("unexpected input: remap-authors is not a json object");
+    }
+    const ignoreUnknownAuthors = core.getBooleanInput("ignore-unknown-authors", {
+        required: false,
+    });
+    const ignoreBranchesWithOpenPRs = core.getBooleanInput("ignore-branches-with-open-prs", { required: false });
+    return (0, removeStaleBranches_1.removeStaleBranches)(octokit, {
+        isDryRun,
+        repo,
+        daysBeforeBranchStale,
+        daysBeforeBranchDelete,
+        staleCommentMessage,
+        selectedBranchesRegex,
+        protectedBranchesRegex,
+        protectedAuthorsRegex,
+        protectedOrganizationName,
+        exemptProtectedBranches,
+        operationsPerRun,
+        operationDelayMs,
+        secondaryRateLimitRetries,
+        secondaryRateLimitRetryMs,
+        defaultRecipient,
+        remapAuthors,
+        ignoreUnknownAuthors,
+        ignoreBranchesWithOpenPRs,
     });
 }
 run();
@@ -30110,23 +30118,10 @@ run();
 /***/ }),
 
 /***/ 1899:
-/***/ (function(__unused_webpack_module, exports) {
+/***/ ((__unused_webpack_module, exports) => {
 
 "use strict";
 
-var __await = (this && this.__await) || function (v) { return this instanceof __await ? (this.v = v, this) : new __await(v); }
-var __asyncGenerator = (this && this.__asyncGenerator) || function (thisArg, _arguments, generator) {
-    if (!Symbol.asyncIterator) throw new TypeError("Symbol.asyncIterator is not defined.");
-    var g = generator.apply(thisArg, _arguments || []), i, q = [];
-    return i = Object.create((typeof AsyncIterator === "function" ? AsyncIterator : Object).prototype), verb("next"), verb("throw"), verb("return", awaitReturn), i[Symbol.asyncIterator] = function () { return this; }, i;
-    function awaitReturn(f) { return function (v) { return Promise.resolve(v).then(f, reject); }; }
-    function verb(n, f) { if (g[n]) { i[n] = function (v) { return new Promise(function (a, b) { q.push([n, v, a, b]) > 1 || resume(n, v); }); }; if (f) i[n] = f(i[n]); } }
-    function resume(n, v) { try { step(g[n](v)); } catch (e) { settle(q[0][3], e); } }
-    function step(r) { r.value instanceof __await ? Promise.resolve(r.value.v).then(fulfill, reject) : settle(q[0][2], r); }
-    function fulfill(value) { resume("next", value); }
-    function reject(value) { resume("throw", value); }
-    function settle(f, v) { if (f(v), q.shift(), q.length) resume(q[0][0], q[0][1]); }
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readBranches = readBranches;
 const GRAPHQL_QUERY = `query ($repo: String!, $owner: String!, $after: String) {
@@ -30218,44 +30213,45 @@ const GRAPHQL_QUERY_WITH_ORG = `query ($repo: String!, $owner: String!, $organiz
     }
   }
 }`;
-function readBranches(octokit, headers, repo, organization) {
-    return __asyncGenerator(this, arguments, function* readBranches_1() {
-        var _a, _b, _c, _d;
-        let pagination = {
-            hasNextPage: true,
-            endCursor: null,
-            hasPreviousPage: false,
-            startCursor: null,
+async function* readBranches(octokit, headers, repo, organization) {
+    let pagination = {
+        hasNextPage: true,
+        endCursor: null,
+        hasPreviousPage: false,
+        startCursor: null,
+    };
+    while (pagination.hasNextPage) {
+        const params = {
+            ...repo,
+            after: pagination.endCursor,
+            headers,
+            organization,
         };
-        while (pagination.hasNextPage) {
-            const params = Object.assign(Object.assign({}, repo), { after: pagination.endCursor, headers,
-                organization });
-            const { repository: { refs: { edges, pageInfo }, }, } = yield __await(octokit.graphql(organization ? GRAPHQL_QUERY_WITH_ORG : GRAPHQL_QUERY, params));
-            for (let i = 0; i < edges.length; ++i) {
-                const ref = edges[i];
-                const { name, prefix, refUpdateRule, associatedPullRequests } = ref.node;
-                const { oid, authoredDate, author } = ref.node.target;
-                let branchAuthor = null;
-                if (author) {
-                    branchAuthor = {
-                        username: (_b = (_a = author.user) === null || _a === void 0 ? void 0 : _a.login) !== null && _b !== void 0 ? _b : null,
-                        email: author.email,
-                        belongsToOrganization: Boolean((_d = (_c = author.user) === null || _c === void 0 ? void 0 : _c.organization) === null || _d === void 0 ? void 0 : _d.id),
-                    };
-                }
-                yield yield __await({
-                    date: Date.parse(authoredDate),
-                    branchName: name,
-                    prefix,
-                    commitId: oid,
-                    author: branchAuthor,
-                    isProtected: refUpdateRule !== null,
-                    openPrs: associatedPullRequests.nodes.length > 0,
-                });
+        const { repository: { refs: { edges, pageInfo }, }, } = await octokit.graphql(organization ? GRAPHQL_QUERY_WITH_ORG : GRAPHQL_QUERY, params);
+        for (let i = 0; i < edges.length; ++i) {
+            const ref = edges[i];
+            const { name, prefix, refUpdateRule, associatedPullRequests } = ref.node;
+            const { oid, authoredDate, author } = ref.node.target;
+            let branchAuthor = null;
+            if (author) {
+                branchAuthor = {
+                    username: author.user?.login ?? null,
+                    email: author.email,
+                    belongsToOrganization: Boolean(author.user?.organization?.id),
+                };
             }
-            pagination = pageInfo;
+            yield {
+                date: Date.parse(authoredDate),
+                branchName: name,
+                prefix,
+                commitId: oid,
+                author: branchAuthor,
+                isProtected: refUpdateRule !== null,
+                openPrs: associatedPullRequests.nodes.length > 0,
+            };
         }
-    });
+        pagination = pageInfo;
+    }
 }
 
 
@@ -30299,83 +30295,113 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
-var __asyncValues = (this && this.__asyncValues) || function (o) {
-    if (!Symbol.asyncIterator) throw new TypeError("Symbol.asyncIterator is not defined.");
-    var m = o[Symbol.asyncIterator], i;
-    return m ? m.call(o) : (o = typeof __values === "function" ? __values(o) : o[Symbol.iterator](), i = {}, verb("next"), verb("throw"), verb("return"), i[Symbol.asyncIterator] = function () { return this; }, i);
-    function verb(n) { i[n] = o[n] && function (v) { return new Promise(function (resolve, reject) { v = o[n](v), settle(resolve, reject, v.done, v.value); }); }; }
-    function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.countsTowardOperationsLimit = countsTowardOperationsLimit;
 exports.removeStaleBranches = removeStaleBranches;
+const core = __importStar(__nccwpck_require__(7484));
+const date_fns_1 = __nccwpck_require__(4367);
 const formatISO_1 = __nccwpck_require__(8871);
 const subDays_1 = __nccwpck_require__(4276);
 const commitComments_1 = __nccwpck_require__(2504);
 const readBranches_1 = __nccwpck_require__(1899);
-const core = __importStar(__nccwpck_require__(7484));
-const date_fns_1 = __nccwpck_require__(4367);
-function processBranch(plan, branch, commitComments, params) {
-    return __awaiter(this, void 0, void 0, function* () {
-        var _a, _b, _c;
-        console.log("-> branch was last updated by " +
-            (((_a = branch.author) === null || _a === void 0 ? void 0 : _a.username) || ((_b = branch.author) === null || _b === void 0 ? void 0 : _b.email) || "(unknown user)") +
-            " on " +
-            (0, formatISO_1.formatISO)(branch.date));
-        if (plan.action === "skip") {
-            console.log(plan.reason);
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function isSecondaryRateLimitError(error) {
+    const requestError = error;
+    const message = requestError.message?.toLowerCase() ?? "";
+    return ((requestError.status === 403 || requestError.status === 429) &&
+        message.includes("secondary rate limit"));
+}
+function getRetryAfterMs(error) {
+    const requestError = error;
+    const retryAfterHeader = requestError.response?.headers?.["retry-after"];
+    if (retryAfterHeader === undefined) {
+        return null;
+    }
+    const retryAfterSeconds = Number.parseInt(String(retryAfterHeader), 10);
+    if (Number.isNaN(retryAfterSeconds) || retryAfterSeconds < 0) {
+        return null;
+    }
+    return retryAfterSeconds * 1000;
+}
+async function waitAfterWriteOperation(params) {
+    if (params.operationDelayMs <= 0) {
+        return;
+    }
+    console.log(`-> waiting ${params.operationDelayMs}ms before the next write operation`);
+    await sleep(params.operationDelayMs);
+}
+async function runWriteOperation(params, operation) {
+    let retries = 0;
+    while (true) {
+        try {
+            const result = await operation();
+            await waitAfterWriteOperation(params);
+            return result;
+        }
+        catch (error) {
+            if (!isSecondaryRateLimitError(error) ||
+                retries >= params.secondaryRateLimitRetries) {
+                throw error;
+            }
+            retries++;
+            const retryDelayMs = getRetryAfterMs(error) ?? params.secondaryRateLimitRetryMs;
+            console.log(`-> hit a secondary rate limit, retrying in ${retryDelayMs}ms (${retries}/${params.secondaryRateLimitRetries})`);
+            await sleep(retryDelayMs);
+        }
+    }
+}
+async function processBranch(plan, branch, commitComments, params) {
+    console.log(`-> branch was last updated by ${branch.author?.username || branch.author?.email || "(unknown user)"} on ${(0, formatISO_1.formatISO)(branch.date)}`);
+    if (plan.action === "skip") {
+        console.log(plan.reason);
+        return;
+    }
+    if (plan.action === "mark stale") {
+        let author = "";
+        console.log(`-> branch will be removed on ${(0, formatISO_1.formatISO)(plan.cutoffTime)}`);
+        if (!branch.author?.username) {
+            author = params.defaultRecipient || "";
+        }
+        else if (params.remapAuthors[branch.author.username]) {
+            author = params.remapAuthors[branch.author.username];
+        }
+        else {
+            author = branch.author.username;
+        }
+        console.log(`-> marking branch as stale (notifying: ${author})`);
+        if (params.isDryRun) {
+            console.log("-> (doing nothing because of dry run flag)");
             return;
         }
-        if (plan.action === "mark stale") {
-            let author = "";
-            console.log("-> branch will be removed on " + (0, formatISO_1.formatISO)(plan.cutoffTime));
-            if (!((_c = branch.author) === null || _c === void 0 ? void 0 : _c.username)) {
-                author = params.defaultRecipient || "";
-            }
-            else if (params.remapAuthors[branch.author.username]) {
-                author = params.remapAuthors[branch.author.username];
-            }
-            else {
-                author = branch.author.username;
-            }
-            console.log("-> marking branch as stale (notifying: " + author + ")");
-            if (params.isDryRun) {
-                console.log("-> (doing nothing because of dry run flag)");
-                return;
-            }
-            const commentTag = "stale:" + branch.branchName;
-            return yield commitComments.addCommitComments({
-                commentTag,
-                commitSHA: branch.commitId,
-                commentBody: commitComments_1.TaggedCommitComments.formatCommentMessage(params.staleCommentMessage, branch, params, params.repo, author),
-            });
-        }
-        console.log("-> branch was marked stale on " + (0, formatISO_1.formatISO)(plan.lastCommentTime));
-        if (plan.action === "keep stale") {
-            console.log("-> branch will be removed on " + (0, formatISO_1.formatISO)(plan.cutoffTime));
+        const commentTag = `stale:${branch.branchName}`;
+        return await runWriteOperation(params, () => commitComments.addCommitComments({
+            commentTag,
+            commitSHA: branch.commitId,
+            commentBody: commitComments_1.TaggedCommitComments.formatCommentMessage(params.staleCommentMessage, branch, params, params.repo, author),
+        }));
+    }
+    console.log(`-> branch was marked stale on ${(0, formatISO_1.formatISO)(plan.lastCommentTime)}`);
+    if (plan.action === "keep stale") {
+        console.log(`-> branch will be removed on ${(0, formatISO_1.formatISO)(plan.cutoffTime)}`);
+        return;
+    }
+    if (plan.action === "remove") {
+        console.log(`-> branch was slated for deletion on ${(0, formatISO_1.formatISO)(plan.cutoffTime)}`);
+        console.log("-> removing branch");
+        if (params.isDryRun) {
+            console.log("-> (doing nothing because of dry run flag)");
             return;
         }
-        if (plan.action === "remove") {
-            console.log("-> branch was slated for deletion on " + (0, formatISO_1.formatISO)(plan.cutoffTime));
-            console.log("-> removing branch");
-            if (params.isDryRun) {
-                console.log("-> (doing nothing because of dry run flag)");
-                return;
-            }
-            commitComments.deleteBranch(branch);
-            plan.comments.forEach((c) => {
-                commitComments.deleteCommitComments({ commentId: c.id });
-            });
+        await runWriteOperation(params, () => commitComments.deleteBranch(branch));
+        for (const comment of plan.comments) {
+            await runWriteOperation(params, () => commitComments.deleteCommitComments({ commentId: comment.id }));
         }
-    });
+    }
+}
+function countsTowardOperationsLimit(plan) {
+    return plan.action === "mark stale" || plan.action === "remove";
 }
 function skip(reason) {
     return {
@@ -30383,175 +30409,156 @@ function skip(reason) {
         reason: reason,
     };
 }
-function getCommitCommentsForBranch(commitComments, branch) {
-    return __awaiter(this, void 0, void 0, function* () {
-        const commentTag = "stale:" + branch.branchName;
-        return yield commitComments.getCommitCommentsWithTag({
-            commentTag,
-            commitSHA: branch.commitId,
-        });
+async function getCommitCommentsForBranch(commitComments, branch) {
+    const commentTag = `stale:${branch.branchName}`;
+    return await commitComments.getCommitCommentsWithTag({
+        commentTag,
+        commitSHA: branch.commitId,
     });
 }
-function planBranchAction(now, branch, filters, commitComments, params) {
-    return __awaiter(this, void 0, void 0, function* () {
-        var _a, _b;
-        if (branch.author &&
-            params.protectedOrganizationName &&
-            branch.author.belongsToOrganization) {
-            return skip(`author ${branch.author.username} belongs to protected organization ${params.protectedOrganizationName}`);
-        }
-        if (!((_a = branch.author) === null || _a === void 0 ? void 0 : _a.username) && !params.ignoreUnknownAuthors) {
-            return skip(`unable to determine username of author for branch ${branch.branchName}`);
-        }
-        if (branch.openPrs && params.ignoreBranchesWithOpenPRs) {
-            return skip(`branch ${branch.branchName} has open PRs`);
-        }
-        if (filters.authorsRegex &&
-            ((_b = branch.author) === null || _b === void 0 ? void 0 : _b.username) &&
-            filters.authorsRegex.test(branch.author.username)) {
-            return skip(`author ${branch.author.username} is exempted`);
-        }
-        if (filters.allowedBranchesRegex && !filters.allowedBranchesRegex.test(branch.branchName)) {
-            return skip(`branch ${branch.branchName} is outside of branch selection`);
-        }
-        if (filters.deniedBranchesRegex && filters.deniedBranchesRegex.test(branch.branchName)) {
-            return skip(`branch ${branch.branchName} is exempted`);
-        }
-        if (filters.exemptProtectedBranches && branch.isProtected) {
-            return skip(`branch ${branch.branchName} is protected`);
-        }
-        if (branch.date >= filters.staleCutoff) {
-            return skip(`branch ${branch.branchName} was updated recently (${(0, formatISO_1.formatISO)(branch.date)})`);
-        }
-        const comments = yield getCommitCommentsForBranch(commitComments, branch);
-        if (comments.length == 0 && params.daysBeforeBranchDelete !== 0) {
-            return {
-                action: "mark stale",
-                cutoffTime: (0, date_fns_1.addDays)(now, params.daysBeforeBranchDelete).getTime(),
-            };
-        }
-        const latestStaleComment = comments.reduce((latestDate, comment) => {
-            const commentDate = Date.parse(comment.created_at);
-            return Math.max(commentDate, latestDate);
-        }, 0);
-        const cutoffTime = (0, date_fns_1.addDays)(latestStaleComment, params.daysBeforeBranchDelete).getTime();
-        if (latestStaleComment >= filters.removeCutoff) {
-            return {
-                action: "keep stale",
-                cutoffTime,
-                lastCommentTime: latestStaleComment,
-            };
-        }
+async function planBranchAction(now, branch, filters, commitComments, params) {
+    if (branch.author &&
+        params.protectedOrganizationName &&
+        branch.author.belongsToOrganization) {
+        return skip(`author ${branch.author.username} belongs to protected organization ${params.protectedOrganizationName}`);
+    }
+    if (!branch.author?.username && !params.ignoreUnknownAuthors) {
+        return skip(`unable to determine username of author for branch ${branch.branchName}`);
+    }
+    if (branch.openPrs && params.ignoreBranchesWithOpenPRs) {
+        return skip(`branch ${branch.branchName} has open PRs`);
+    }
+    if (filters.authorsRegex &&
+        branch.author?.username &&
+        filters.authorsRegex.test(branch.author.username)) {
+        return skip(`author ${branch.author.username} is exempted`);
+    }
+    if (filters.allowedBranchesRegex &&
+        !filters.allowedBranchesRegex.test(branch.branchName)) {
+        return skip(`branch ${branch.branchName} is outside of branch selection`);
+    }
+    if (filters.deniedBranchesRegex?.test(branch.branchName)) {
+        return skip(`branch ${branch.branchName} is exempted`);
+    }
+    if (filters.exemptProtectedBranches && branch.isProtected) {
+        return skip(`branch ${branch.branchName} is protected`);
+    }
+    if (branch.date >= filters.staleCutoff) {
+        return skip(`branch ${branch.branchName} was updated recently (${(0, formatISO_1.formatISO)(branch.date)})`);
+    }
+    const comments = await getCommitCommentsForBranch(commitComments, branch);
+    if (comments.length === 0 && params.daysBeforeBranchDelete !== 0) {
         return {
-            action: "remove",
-            comments,
+            action: "mark stale",
+            cutoffTime: (0, date_fns_1.addDays)(now, params.daysBeforeBranchDelete).getTime(),
+        };
+    }
+    const latestStaleComment = comments.reduce((latestDate, comment) => {
+        const commentDate = Date.parse(comment.created_at);
+        return Math.max(commentDate, latestDate);
+    }, 0);
+    const cutoffTime = (0, date_fns_1.addDays)(latestStaleComment, params.daysBeforeBranchDelete).getTime();
+    if (latestStaleComment >= filters.removeCutoff) {
+        return {
+            action: "keep stale",
             cutoffTime,
             lastCommentTime: latestStaleComment,
         };
-    });
+    }
+    return {
+        action: "remove",
+        comments,
+        cutoffTime,
+        lastCommentTime: latestStaleComment,
+    };
 }
 function logActionRunConfiguration(params, staleCutoff, removeCutoff) {
     if (params.isDryRun) {
         console.log("Running in dry-run mode. No branch will be removed.");
     }
     console.log(`Branches updated before ${(0, formatISO_1.formatISO)(staleCutoff)} will be marked as stale`);
-    if (params.daysBeforeBranchDelete == 0) {
+    if (params.daysBeforeBranchDelete === 0) {
         console.log("Branches will be instantly removed due to days-before-branch-delete being set to 0.");
     }
     else {
         console.log(`Branches marked stale before ${(0, formatISO_1.formatISO)(removeCutoff)} will be removed`);
     }
 }
-function removeStaleBranches(octokit, params) {
-    return __awaiter(this, void 0, void 0, function* () {
-        var _a, e_1, _b, _c;
-        const headers = params.githubToken
-            ? {
-                "Content-Type": "application/json",
-                Authorization: "bearer " + params.githubToken,
+async function removeStaleBranches(octokit, params) {
+    const headers = params.githubToken
+        ? {
+            "Content-Type": "application/json",
+            Authorization: `bearer ${params.githubToken}`,
+        }
+        : {};
+    const now = new Date();
+    const staleCutoff = (0, subDays_1.subDays)(now, params.daysBeforeBranchStale).getTime();
+    const removeCutoff = (0, subDays_1.subDays)(now, params.daysBeforeBranchDelete).getTime();
+    const authorsRegex = params.protectedAuthorsRegex
+        ? new RegExp(params.protectedAuthorsRegex)
+        : null;
+    const allowedBranchesRegex = params.selectedBranchesRegex
+        ? new RegExp(params.selectedBranchesRegex)
+        : null;
+    const deniedBranchesRegex = params.protectedBranchesRegex
+        ? new RegExp(params.protectedBranchesRegex)
+        : null;
+    const repo = params.repo;
+    const filters = {
+        staleCutoff,
+        authorsRegex,
+        allowedBranchesRegex,
+        deniedBranchesRegex,
+        removeCutoff,
+        exemptProtectedBranches: params.exemptProtectedBranches,
+    };
+    const commitComments = new commitComments_1.TaggedCommitComments(repo, octokit, headers);
+    let mutatedBranches = 0;
+    const summary = {
+        remove: 0,
+        "mark stale": 0,
+        "keep stale": 0,
+        skip: 0,
+        scanned: 0,
+    };
+    if (params.ignoreUnknownAuthors && !params.defaultRecipient) {
+        console.error("When ignoring unknown authors, you must specify a default recipient");
+        return;
+    }
+    logActionRunConfiguration(params, staleCutoff, removeCutoff);
+    const icons = {
+        remove: "❌",
+        "mark stale": "⚰️",
+        "keep stale": "😐",
+        skip: "✅",
+    };
+    for await (const branch of (0, readBranches_1.readBranches)(octokit, headers, repo, params.protectedOrganizationName)) {
+        summary.scanned++;
+        const plan = await planBranchAction(now.getTime(), branch, filters, commitComments, params);
+        summary[plan.action]++;
+        core.startGroup(`${icons[plan.action]} branch ${branch.branchName}`);
+        try {
+            await processBranch(plan, branch, commitComments, params);
+            if (countsTowardOperationsLimit(plan)) {
+                mutatedBranches++;
             }
-            : {};
-        const now = new Date();
-        const staleCutoff = (0, subDays_1.subDays)(now, params.daysBeforeBranchStale).getTime();
-        const removeCutoff = (0, subDays_1.subDays)(now, params.daysBeforeBranchDelete).getTime();
-        const authorsRegex = params.protectedAuthorsRegex
-            ? new RegExp(params.protectedAuthorsRegex)
-            : null;
-        const allowedBranchesRegex = params.selectedBranchesRegex
-            ? new RegExp(params.selectedBranchesRegex)
-            : null;
-        const deniedBranchesRegex = params.protectedBranchesRegex
-            ? new RegExp(params.protectedBranchesRegex)
-            : null;
-        const repo = params.repo;
-        const filters = {
-            staleCutoff,
-            authorsRegex,
-            allowedBranchesRegex,
-            deniedBranchesRegex,
-            removeCutoff,
-            exemptProtectedBranches: params.exemptProtectedBranches,
-        };
-        const commitComments = new commitComments_1.TaggedCommitComments(repo, octokit, headers);
-        let operations = 0;
-        let summary = {
-            remove: 0,
-            "mark stale": 0,
-            "keep stale": 0,
-            skip: 0,
-            scanned: 0,
-        };
-        if (params.ignoreUnknownAuthors && !params.defaultRecipient) {
-            console.error("When ignoring unknown authors, you must specify a default recipient");
+        }
+        finally {
+            core.endGroup();
+        }
+        if (mutatedBranches >= params.operationsPerRun) {
+            console.log(`Stopping after ${mutatedBranches} mutated branches`);
             return;
         }
-        logActionRunConfiguration(params, staleCutoff, removeCutoff);
-        const icons = {
-            remove: "❌",
-            "mark stale": "⚰️",
-            "keep stale": "😐",
-            skip: "✅",
-        };
-        try {
-            for (var _d = true, _e = __asyncValues((0, readBranches_1.readBranches)(octokit, headers, repo, params.protectedOrganizationName)), _f; _f = yield _e.next(), _a = _f.done, !_a; _d = true) {
-                _c = _f.value;
-                _d = false;
-                const branch = _c;
-                summary.scanned++;
-                const plan = yield planBranchAction(now.getTime(), branch, filters, commitComments, params);
-                summary[plan.action]++;
-                core.startGroup(`${icons[plan.action]} branch ${branch.branchName}`);
-                try {
-                    yield processBranch(plan, branch, commitComments, params);
-                    if (plan.action !== "skip" && plan.action != "keep stale") {
-                        operations++;
-                    }
-                }
-                finally {
-                    core.endGroup();
-                }
-                if (operations >= params.operationsPerRun) {
-                    console.log("Stopping after " + operations + " operations");
-                    return;
-                }
-            }
-        }
-        catch (e_1_1) { e_1 = { error: e_1_1 }; }
-        finally {
-            try {
-                if (!_d && !_a && (_b = _e.return)) yield _b.call(_e);
-            }
-            finally { if (e_1) throw e_1.error; }
-        }
-        const actionSummary = [
-            `${summary.scanned} scanned`,
-            `${icons.skip} ${summary.skip} skipped`,
-            `${icons["mark stale"]} ${summary["mark stale"]} marked stale`,
-            `${icons["keep stale"]} ${summary["keep stale"]} kept stale`,
-            `${icons.remove} ${summary.remove} removed`,
-        ].join(", ");
-        console.log(`Summary:  ${actionSummary}`);
-    });
+    }
+    const actionSummary = [
+        `${summary.scanned} scanned`,
+        `${icons.skip} ${summary.skip} skipped`,
+        `${icons["mark stale"]} ${summary["mark stale"]} marked stale`,
+        `${icons["keep stale"]} ${summary["keep stale"]} kept stale`,
+        `${icons.remove} ${summary.remove} removed`,
+    ].join(", ");
+    console.log(`Summary:  ${actionSummary}`);
 }
 
 
