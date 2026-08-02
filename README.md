@@ -40,6 +40,10 @@ You can also restrict this action to a subset of your branches using the `restri
 | `default-recipient`             | (not set)                                                                                                                                                                                                                                           | When `ignore-unknown-authors` is `true`, use this login as the author to notify when the branch becomes stale.                                                                                                                                                 |
 | `remap-authors`                 | (not set)                                                                                                                                                                                                                                           | A JSON formatted string that can remap branch authors onto the ones that will be notified. This can be useful when people are on longer leave.                                                                                                                 |
 | `ignore-branches-with-open-prs` | `false`                                                                                                                                                                                                                                             | When `ignore-branches-with-open-prs` is `true`, branches with open PRs will be ignored.                                                                                                                                                                        |
+| `close-open-prs-before-branch-delete` | `false`                                                                                                                                                                                                                                      | When `true`, close associated open PRs before deleting a stale branch. Requires `pull-requests: write`; a failed close leaves the branch intact for retry.                                                                                                  |
+| `close-stale-pull-requests` | `false`                                                                                                                                                                                                                                                | When `true`, mark every open PR inactive for `days-before-branch-stale` days with the stale label, then close labelled PRs on a later run. PR base branches are not filtered. Requires `issues: write` and `pull-requests: write`. |
+| `stale-pull-request-label` | `stale`                                                                                                                                                                                                                                                       | Existing label used to mark an inactive PR before it is closed.                                                                                                                                                                           |
+| `pull-request-operations-per-run` | `10`                                                                                                                                                                                                                                                 | Maximum number of PR labels or closures to perform per run.                                                                                                                                                                               |
 
 ### Tokens replaced in `stale-branch-message`
 
@@ -114,6 +118,18 @@ pull-requests: read
 Content write access is needed to read branches and commits, and also comment on those branches when they are stale.
 
 Pull request read access is needed to understand if a branch is still attached to an open pull request.
+
+When `close-open-prs-before-branch-delete` is enabled, change
+`pull-requests: read` to `pull-requests: write`.
+
+When `close-stale-pull-requests` is enabled, change `pull-requests: read` to
+`pull-requests: write` and add `issues: write`. This mode inspects every open
+PR, regardless of its base branch. An inactive PR is labelled first; if it
+remains inactive and still has the configured stale label on a later run, it is
+closed. New PR activity removes that label so a future stale cycle receives a
+fresh warning.
+
+The action closes associated open PRs before deleting their head branch. This avoids leaving an open PR whose branch no longer exists. If closing any associated PR fails, the branch is not deleted and the next run can retry safely.
 
 # Why not using (your favorite action) instead?
 

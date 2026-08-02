@@ -29982,6 +29982,30 @@ class TaggedCommitComments {
             ref,
         });
     }
+    async closePullRequest(pullNumber) {
+        return this.octokit.request("PATCH /repos/{owner}/{repo}/pulls/{pull_number}", {
+            headers: this.headers,
+            ...this.repo,
+            pull_number: pullNumber,
+            state: "closed",
+        });
+    }
+    async addPullRequestLabel(pullNumber, label) {
+        return this.octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/labels", {
+            headers: this.headers,
+            ...this.repo,
+            issue_number: pullNumber,
+            labels: [label],
+        });
+    }
+    async removePullRequestLabel(pullNumber, label) {
+        return this.octokit.request("DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}", {
+            headers: this.headers,
+            ...this.repo,
+            issue_number: pullNumber,
+            name: label,
+        });
+    }
     async getProtectedBranches() {
         const { data } = await this.octokit.request("GET /repos/{owner}/{repo}/branches?protected=true", {
             headers: this.headers,
@@ -30091,6 +30115,12 @@ async function run() {
         required: false,
     });
     const ignoreBranchesWithOpenPRs = core.getBooleanInput("ignore-branches-with-open-prs", { required: false });
+    const closeOpenPrsBeforeBranchDelete = core.getBooleanInput("close-open-prs-before-branch-delete", { required: false });
+    const closeStalePullRequests = core.getBooleanInput("close-stale-pull-requests", { required: false });
+    const stalePullRequestLabel = core.getInput("stale-pull-request-label", {
+        required: false,
+    });
+    const pullRequestOperationsPerRun = getNonNegativeIntegerInput("pull-request-operations-per-run");
     return (0, removeStaleBranches_1.removeStaleBranches)(octokit, {
         isDryRun,
         repo,
@@ -30110,6 +30140,10 @@ async function run() {
         remapAuthors,
         ignoreUnknownAuthors,
         ignoreBranchesWithOpenPRs,
+        closeOpenPrsBeforeBranchDelete,
+        closeStalePullRequests,
+        stalePullRequestLabel,
+        pullRequestOperationsPerRun,
     });
 }
 run();
@@ -30135,9 +30169,10 @@ const GRAPHQL_QUERY = `query ($repo: String!, $owner: String!, $after: String) {
       edges {
         node {
           name
-          associatedPullRequests(first: 1, states: OPEN) {
+          associatedPullRequests(first: 100, states: OPEN) {
+            totalCount
             nodes {
-              state
+              number
             }
           }
           prefix
@@ -30178,9 +30213,10 @@ const GRAPHQL_QUERY_WITH_ORG = `query ($repo: String!, $owner: String!, $organiz
       edges {
         node {
           name
-          associatedPullRequests(first: 1, states: OPEN) {
+          associatedPullRequests(first: 100, states: OPEN) {
+            totalCount
             nodes {
-              state
+              number
             }
           }
           prefix
@@ -30247,10 +30283,72 @@ async function* readBranches(octokit, headers, repo, organization) {
                 commitId: oid,
                 author: branchAuthor,
                 isProtected: refUpdateRule !== null,
-                openPrs: associatedPullRequests.nodes.length > 0,
+                openPullRequestNumbers: associatedPullRequests.nodes.map(({ number }) => number),
+                hasMoreOpenPullRequests: associatedPullRequests.totalCount >
+                    associatedPullRequests.nodes.length,
             };
         }
         pagination = pageInfo;
+    }
+}
+
+
+/***/ }),
+
+/***/ 5030:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.readOpenPullRequests = readOpenPullRequests;
+const GRAPHQL_QUERY = `query ($repo: String!, $owner: String!, $after: String) {
+  repository(name: $repo, owner: $owner) {
+    pullRequests(
+      first: 100,
+      after: $after,
+      states: OPEN,
+      orderBy: { field: UPDATED_AT, direction: ASC },
+    ) {
+      nodes {
+        number
+        updatedAt
+        baseRefName
+        labels(first: 100) {
+          nodes {
+            name
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}`;
+async function* readOpenPullRequests(octokit, headers, repo) {
+    let after = null;
+    while (true) {
+        const result = await octokit.graphql(GRAPHQL_QUERY, {
+            ...repo,
+            after,
+            headers,
+        });
+        const pullRequests = result.repository.pullRequests;
+        const { nodes, pageInfo } = pullRequests;
+        for (const pullRequest of nodes) {
+            yield {
+                number: pullRequest.number,
+                updatedAt: Date.parse(pullRequest.updatedAt),
+                baseRefName: pullRequest.baseRefName,
+                labels: pullRequest.labels.nodes.map(({ name }) => name),
+            };
+        }
+        if (!pageInfo.hasNextPage) {
+            return;
+        }
+        after = pageInfo.endCursor;
     }
 }
 
@@ -30304,6 +30402,7 @@ const formatISO_1 = __nccwpck_require__(8871);
 const subDays_1 = __nccwpck_require__(4276);
 const commitComments_1 = __nccwpck_require__(2504);
 const readBranches_1 = __nccwpck_require__(1899);
+const readPullRequests_1 = __nccwpck_require__(5030);
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -30389,10 +30488,19 @@ async function processBranch(plan, branch, commitComments, params) {
     }
     if (plan.action === "remove") {
         console.log(`-> branch was slated for deletion on ${(0, formatISO_1.formatISO)(plan.cutoffTime)}`);
+        if (params.closeOpenPrsBeforeBranchDelete &&
+            branch.openPullRequestNumbers.length > 0) {
+            console.log(`-> closing ${branch.openPullRequestNumbers.length} associated open PR(s) before removing branch`);
+        }
         console.log("-> removing branch");
         if (params.isDryRun) {
             console.log("-> (doing nothing because of dry run flag)");
             return;
+        }
+        if (params.closeOpenPrsBeforeBranchDelete) {
+            for (const pullNumber of branch.openPullRequestNumbers) {
+                await runWriteOperation(params, () => commitComments.closePullRequest(pullNumber));
+            }
         }
         await runWriteOperation(params, () => commitComments.deleteBranch(branch));
         for (const comment of plan.comments) {
@@ -30408,6 +30516,46 @@ function skip(reason) {
         action: "skip",
         reason: reason,
     };
+}
+function planPullRequestAction(pullRequest, staleCutoff, staleLabel) {
+    if (pullRequest.updatedAt >= staleCutoff) {
+        return pullRequest.labels.includes(staleLabel) ? "clear stale" : "skip";
+    }
+    return pullRequest.labels.includes(staleLabel) ? "close" : "mark stale";
+}
+async function processStalePullRequests(octokit, headers, repo, staleCutoff, commitComments, params) {
+    if (!params.closeStalePullRequests) {
+        return;
+    }
+    let mutatedPullRequests = 0;
+    for await (const pullRequest of (0, readPullRequests_1.readOpenPullRequests)(octokit, headers, repo)) {
+        const plan = planPullRequestAction(pullRequest, staleCutoff, params.stalePullRequestLabel);
+        if (plan === "skip") {
+            continue;
+        }
+        const action = plan === "close"
+            ? "closing"
+            : plan === "clear stale"
+                ? "removing stale label from"
+                : "marking as stale";
+        console.log(`-> ${action} PR #${pullRequest.number} targeting ${pullRequest.baseRefName}`);
+        if (!params.isDryRun) {
+            if (plan === "close") {
+                await runWriteOperation(params, () => commitComments.closePullRequest(pullRequest.number));
+            }
+            else if (plan === "clear stale") {
+                await runWriteOperation(params, () => commitComments.removePullRequestLabel(pullRequest.number, params.stalePullRequestLabel));
+            }
+            else {
+                await runWriteOperation(params, () => commitComments.addPullRequestLabel(pullRequest.number, params.stalePullRequestLabel));
+            }
+        }
+        mutatedPullRequests++;
+        if (mutatedPullRequests >= params.pullRequestOperationsPerRun) {
+            console.log(`Stopping after ${mutatedPullRequests} mutated pull requests`);
+            return;
+        }
+    }
 }
 async function getCommitCommentsForBranch(commitComments, branch) {
     const commentTag = `stale:${branch.branchName}`;
@@ -30425,7 +30573,8 @@ async function planBranchAction(now, branch, filters, commitComments, params) {
     if (!branch.author?.username && !params.ignoreUnknownAuthors) {
         return skip(`unable to determine username of author for branch ${branch.branchName}`);
     }
-    if (branch.openPrs && params.ignoreBranchesWithOpenPRs) {
+    if (branch.openPullRequestNumbers.length > 0 &&
+        params.ignoreBranchesWithOpenPRs) {
         return skip(`branch ${branch.branchName} has open PRs`);
     }
     if (filters.authorsRegex &&
@@ -30445,6 +30594,9 @@ async function planBranchAction(now, branch, filters, commitComments, params) {
     }
     if (branch.date >= filters.staleCutoff) {
         return skip(`branch ${branch.branchName} was updated recently (${(0, formatISO_1.formatISO)(branch.date)})`);
+    }
+    if (params.closeOpenPrsBeforeBranchDelete && branch.hasMoreOpenPullRequests) {
+        return skip(`branch ${branch.branchName} has more associated open PRs than can be closed safely in one run`);
     }
     const comments = await getCommitCommentsForBranch(commitComments, branch);
     if (comments.length === 0 && params.daysBeforeBranchDelete !== 0) {
@@ -30548,9 +30700,10 @@ async function removeStaleBranches(octokit, params) {
         }
         if (mutatedBranches >= params.operationsPerRun) {
             console.log(`Stopping after ${mutatedBranches} mutated branches`);
-            return;
+            break;
         }
     }
+    await processStalePullRequests(octokit, headers, repo, staleCutoff, commitComments, params);
     const actionSummary = [
         `${summary.scanned} scanned`,
         `${icons.skip} ${summary.skip} skipped`,

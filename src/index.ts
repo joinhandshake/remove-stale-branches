@@ -88,6 +88,20 @@ async function run(): Promise<void> {
     "ignore-branches-with-open-prs",
     { required: false },
   );
+  const closeOpenPrsBeforeBranchDelete = core.getBooleanInput(
+    "close-open-prs-before-branch-delete",
+    { required: false },
+  );
+  const closeStalePullRequests = core.getBooleanInput(
+    "close-stale-pull-requests",
+    { required: false },
+  );
+  const stalePullRequestLabel = core.getInput("stale-pull-request-label", {
+    required: false,
+  });
+  const pullRequestOperationsPerRun = getNonNegativeIntegerInput(
+    "pull-request-operations-per-run",
+  );
 
   return removeStaleBranches(octokit, {
     isDryRun,
@@ -108,6 +122,10 @@ async function run(): Promise<void> {
     remapAuthors,
     ignoreUnknownAuthors,
     ignoreBranchesWithOpenPRs,
+    closeOpenPrsBeforeBranchDelete,
+    closeStalePullRequests,
+    stalePullRequestLabel,
+    pullRequestOperationsPerRun,
   });
 }
 

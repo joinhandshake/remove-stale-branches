@@ -5,7 +5,8 @@ import { formatISO } from "date-fns/formatISO";
 import { subDays } from "date-fns/subDays";
 import { TaggedCommitComments } from "./commitComments";
 import { readBranches } from "./readBranches";
-import type { Branch, Params } from "./types";
+import { readOpenPullRequests } from "./readPullRequests";
+import type { Branch, Params, PullRequest } from "./types";
 
 type BranchFilters = {
   staleCutoff: number;
@@ -156,10 +157,26 @@ async function processBranch(
     console.log(
       `-> branch was slated for deletion on ${formatISO(plan.cutoffTime)}`,
     );
+    if (
+      params.closeOpenPrsBeforeBranchDelete &&
+      branch.openPullRequestNumbers.length > 0
+    ) {
+      console.log(
+        `-> closing ${branch.openPullRequestNumbers.length} associated open PR(s) before removing branch`,
+      );
+    }
     console.log("-> removing branch");
     if (params.isDryRun) {
       console.log("-> (doing nothing because of dry run flag)");
       return;
+    }
+
+    if (params.closeOpenPrsBeforeBranchDelete) {
+      for (const pullNumber of branch.openPullRequestNumbers) {
+        await runWriteOperation(params, () =>
+          commitComments.closePullRequest(pullNumber),
+        );
+      }
     }
 
     await runWriteOperation(params, () => commitComments.deleteBranch(branch));
@@ -196,6 +213,88 @@ function skip(reason: string): Plan {
 
 type Comment = { created_at: string; id: number };
 
+type PullRequestPlan = "skip" | "mark stale" | "clear stale" | "close";
+
+function planPullRequestAction(
+  pullRequest: PullRequest,
+  staleCutoff: number,
+  staleLabel: string,
+): PullRequestPlan {
+  if (pullRequest.updatedAt >= staleCutoff) {
+    return pullRequest.labels.includes(staleLabel) ? "clear stale" : "skip";
+  }
+
+  return pullRequest.labels.includes(staleLabel) ? "close" : "mark stale";
+}
+
+async function processStalePullRequests(
+  octokit: Octokit,
+  headers: Record<string, string>,
+  repo: Params["repo"],
+  staleCutoff: number,
+  commitComments: TaggedCommitComments,
+  params: Params,
+): Promise<void> {
+  if (!params.closeStalePullRequests) {
+    return;
+  }
+
+  let mutatedPullRequests = 0;
+  for await (const pullRequest of readOpenPullRequests(
+    octokit,
+    headers,
+    repo,
+  )) {
+    const plan = planPullRequestAction(
+      pullRequest,
+      staleCutoff,
+      params.stalePullRequestLabel,
+    );
+    if (plan === "skip") {
+      continue;
+    }
+
+    const action =
+      plan === "close"
+        ? "closing"
+        : plan === "clear stale"
+          ? "removing stale label from"
+          : "marking as stale";
+    console.log(
+      `-> ${action} PR #${pullRequest.number} targeting ${pullRequest.baseRefName}`,
+    );
+    if (!params.isDryRun) {
+      if (plan === "close") {
+        await runWriteOperation(params, () =>
+          commitComments.closePullRequest(pullRequest.number),
+        );
+      } else if (plan === "clear stale") {
+        await runWriteOperation(params, () =>
+          commitComments.removePullRequestLabel(
+            pullRequest.number,
+            params.stalePullRequestLabel,
+          ),
+        );
+      } else {
+        await runWriteOperation(params, () =>
+          commitComments.addPullRequestLabel(
+            pullRequest.number,
+            params.stalePullRequestLabel,
+          ),
+        );
+      }
+    }
+
+    mutatedPullRequests++;
+    if (mutatedPullRequests >= params.pullRequestOperationsPerRun) {
+      console.log(
+        `Stopping after ${mutatedPullRequests} mutated pull requests`,
+      );
+      return;
+    }
+  }
+}
+
 async function getCommitCommentsForBranch(
   commitComments: TaggedCommitComments,
   branch: Branch,
@@ -229,7 +328,10 @@ async function planBranchAction(
     );
   }
 
-  if (branch.openPrs && params.ignoreBranchesWithOpenPRs) {
+  if (
+    branch.openPullRequestNumbers.length > 0 &&
+    params.ignoreBranchesWithOpenPRs
+  ) {
     return skip(`branch ${branch.branchName} has open PRs`);
   }
 
@@ -260,6 +362,12 @@ async function planBranchAction(
       `branch ${branch.branchName} was updated recently (${formatISO(
         branch.date,
       )})`,
+    );
+  }
+
+  if (params.closeOpenPrsBeforeBranchDelete && branch.hasMoreOpenPullRequests) {
+    return skip(
+      `branch ${branch.branchName} has more associated open PRs than can be closed safely in one run`,
     );
   }
 
@@ -407,9 +515,18 @@ export async function removeStaleBranches(
 
     if (mutatedBranches >= params.operationsPerRun) {
       console.log(`Stopping after ${mutatedBranches} mutated branches`);
-      return;
+      break;
     }
   }
+
+  await processStalePullRequests(
+    octokit,
+    headers,
+    repo,
+    staleCutoff,
+    commitComments,
+    params,
+  );
 
   const actionSummary = [
     `${summary.scanned} scanned`,

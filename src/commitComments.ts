@@ -123,6 +123,42 @@ export class TaggedCommitComments {
     });
   }
 
+  async closePullRequest(pullNumber: number) {
+    return this.octokit.request(
+      "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+      {
+        headers: this.headers,
+        ...this.repo,
+        pull_number: pullNumber,
+        state: "closed",
+      },
+    );
+  }
+
+  async addPullRequestLabel(pullNumber: number, label: string) {
+    return this.octokit.request(
+      "POST /repos/{owner}/{repo}/issues/{issue_number}/labels",
+      {
+        headers: this.headers,
+        ...this.repo,
+        issue_number: pullNumber,
+        labels: [label],
+      },
+    );
+  }
+
+  async removePullRequestLabel(pullNumber: number, label: string) {
+    return this.octokit.request(
+      "DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}",
+      {
+        headers: this.headers,
+        ...this.repo,
+        issue_number: pullNumber,
+        name: label,
+      },
+    );
+  }
+
   async getProtectedBranches() {
     const { data } = await this.octokit.request(
       "GET /repos/{owner}/{repo}/branches?protected=true",
