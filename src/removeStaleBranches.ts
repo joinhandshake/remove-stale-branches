@@ -215,16 +215,26 @@ type Comment = { created_at: string; id: number };
 
 type PullRequestPlan = "skip" | "mark stale" | "clear stale" | "close";
 
+const STALE_LABEL_UPDATE_GRACE_MS = 60_000;
+
 function planPullRequestAction(
   pullRequest: PullRequest,
   staleCutoff: number,
-  staleLabel: string,
 ): PullRequestPlan {
-  if (pullRequest.updatedAt >= staleCutoff) {
-    return pullRequest.labels.includes(staleLabel) ? "clear stale" : "skip";
+  if (!pullRequest.hasStaleLabel) {
+    return pullRequest.updatedAt >= staleCutoff ? "skip" : "mark stale";
   }
 
-  return pullRequest.labels.includes(staleLabel) ? "close" : "mark stale";
+  if (
+    pullRequest.updatedAt < staleCutoff ||
+    (pullRequest.staleLabelAppliedAt !== null &&
+      pullRequest.updatedAt <=
+        pullRequest.staleLabelAppliedAt + STALE_LABEL_UPDATE_GRACE_MS)
+  ) {
+    return "close";
+  }
+
+  return "clear stale";
 }
 
 async function processStalePullRequests(
@@ -238,18 +248,21 @@ async function processStalePullRequests(
   if (!params.closeStalePullRequests) {
     return;
   }
+  if (params.pullRequestOperationsPerRun === 0) {
+    console.log(
+      "Skipping stale pull request processing: operations limit is 0",
+    );
+    return;
+  }
 
   let mutatedPullRequests = 0;
   for await (const pullRequest of readOpenPullRequests(
     octokit,
     headers,
     repo,
+    params.stalePullRequestLabel,
   )) {
-    const plan = planPullRequestAction(
-      pullRequest,
-      staleCutoff,
-      params.stalePullRequestLabel,
-    );
+    const plan = planPullRequestAction(pullRequest, staleCutoff);
     if (plan === "skip") {
       continue;
     }
@@ -365,12 +378,6 @@ async function planBranchAction(
     );
   }
 
-  if (params.closeOpenPrsBeforeBranchDelete && branch.hasMoreOpenPullRequests) {
-    return skip(
-      `branch ${branch.branchName} has more associated open PRs than can be closed safely in one run`,
-    );
-  }
-
   const comments = await getCommitCommentsForBranch(commitComments, branch);
   if (comments.length === 0 && params.daysBeforeBranchDelete !== 0) {
     return {
@@ -396,12 +403,19 @@ async function planBranchAction(
     };
   }
 
-  return {
+  const removalPlan: Plan = {
     action: "remove",
     comments,
     cutoffTime,
     lastCommentTime: latestStaleComment,
   };
+  if (params.closeOpenPrsBeforeBranchDelete && branch.hasMoreOpenPullRequests) {
+    return skip(
+      `branch ${branch.branchName} has more associated open PRs than can be closed safely in one run`,
+    );
+  }
+
+  return removalPlan;
 }
 
 function logActionRunConfiguration(

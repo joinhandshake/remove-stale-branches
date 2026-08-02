@@ -30315,8 +30315,19 @@ const GRAPHQL_QUERY = `query ($repo: String!, $owner: String!, $after: String) {
         updatedAt
         baseRefName
         labels(first: 100) {
+          totalCount
           nodes {
             name
+          }
+        }
+        timelineItems(last: 100, itemTypes: [LABELED_EVENT]) {
+          nodes {
+            ... on LabeledEvent {
+              createdAt
+              label {
+                name
+              }
+            }
           }
         }
       }
@@ -30327,7 +30338,7 @@ const GRAPHQL_QUERY = `query ($repo: String!, $owner: String!, $after: String) {
     }
   }
 }`;
-async function* readOpenPullRequests(octokit, headers, repo) {
+async function* readOpenPullRequests(octokit, headers, repo, staleLabel) {
     let after = null;
     while (true) {
         const result = await octokit.graphql(GRAPHQL_QUERY, {
@@ -30338,11 +30349,16 @@ async function* readOpenPullRequests(octokit, headers, repo) {
         const pullRequests = result.repository.pullRequests;
         const { nodes, pageInfo } = pullRequests;
         for (const pullRequest of nodes) {
+            const labels = pullRequest.labels.nodes.map(({ name }) => name);
+            const hasStaleLabel = labels.includes(staleLabel) ||
+                (pullRequest.labels.totalCount > labels.length &&
+                    (await hasPullRequestLabel(octokit, headers, repo, pullRequest.number, staleLabel)));
             yield {
                 number: pullRequest.number,
                 updatedAt: Date.parse(pullRequest.updatedAt),
                 baseRefName: pullRequest.baseRefName,
-                labels: pullRequest.labels.nodes.map(({ name }) => name),
+                hasStaleLabel,
+                staleLabelAppliedAt: findLatestLabelEvent(pullRequest.timelineItems.nodes, staleLabel),
             };
         }
         if (!pageInfo.hasNextPage) {
@@ -30350,6 +30366,32 @@ async function* readOpenPullRequests(octokit, headers, repo) {
         }
         after = pageInfo.endCursor;
     }
+}
+async function hasPullRequestLabel(octokit, headers, repo, pullNumber, label) {
+    for (let page = 1;; page++) {
+        const { data } = await octokit.request("GET /repos/{owner}/{repo}/issues/{issue_number}/labels", {
+            headers,
+            ...repo,
+            issue_number: pullNumber,
+            page,
+            per_page: 100,
+        });
+        if (data.some(({ name }) => name === label)) {
+            return true;
+        }
+        if (data.length < 100) {
+            return false;
+        }
+    }
+}
+function findLatestLabelEvent(events, label) {
+    return events.reduce((latest, event) => {
+        if (event.label?.name !== label) {
+            return latest;
+        }
+        const eventTime = Date.parse(event.createdAt);
+        return latest === null || eventTime > latest ? eventTime : latest;
+    }, null);
 }
 
 
@@ -30517,19 +30559,30 @@ function skip(reason) {
         reason: reason,
     };
 }
-function planPullRequestAction(pullRequest, staleCutoff, staleLabel) {
-    if (pullRequest.updatedAt >= staleCutoff) {
-        return pullRequest.labels.includes(staleLabel) ? "clear stale" : "skip";
+const STALE_LABEL_UPDATE_GRACE_MS = 60_000;
+function planPullRequestAction(pullRequest, staleCutoff) {
+    if (!pullRequest.hasStaleLabel) {
+        return pullRequest.updatedAt >= staleCutoff ? "skip" : "mark stale";
     }
-    return pullRequest.labels.includes(staleLabel) ? "close" : "mark stale";
+    if (pullRequest.updatedAt < staleCutoff ||
+        (pullRequest.staleLabelAppliedAt !== null &&
+            pullRequest.updatedAt <=
+                pullRequest.staleLabelAppliedAt + STALE_LABEL_UPDATE_GRACE_MS)) {
+        return "close";
+    }
+    return "clear stale";
 }
 async function processStalePullRequests(octokit, headers, repo, staleCutoff, commitComments, params) {
     if (!params.closeStalePullRequests) {
         return;
     }
+    if (params.pullRequestOperationsPerRun === 0) {
+        console.log("Skipping stale pull request processing: operations limit is 0");
+        return;
+    }
     let mutatedPullRequests = 0;
-    for await (const pullRequest of (0, readPullRequests_1.readOpenPullRequests)(octokit, headers, repo)) {
-        const plan = planPullRequestAction(pullRequest, staleCutoff, params.stalePullRequestLabel);
+    for await (const pullRequest of (0, readPullRequests_1.readOpenPullRequests)(octokit, headers, repo, params.stalePullRequestLabel)) {
+        const plan = planPullRequestAction(pullRequest, staleCutoff);
         if (plan === "skip") {
             continue;
         }
@@ -30595,9 +30648,6 @@ async function planBranchAction(now, branch, filters, commitComments, params) {
     if (branch.date >= filters.staleCutoff) {
         return skip(`branch ${branch.branchName} was updated recently (${(0, formatISO_1.formatISO)(branch.date)})`);
     }
-    if (params.closeOpenPrsBeforeBranchDelete && branch.hasMoreOpenPullRequests) {
-        return skip(`branch ${branch.branchName} has more associated open PRs than can be closed safely in one run`);
-    }
     const comments = await getCommitCommentsForBranch(commitComments, branch);
     if (comments.length === 0 && params.daysBeforeBranchDelete !== 0) {
         return {
@@ -30617,12 +30667,16 @@ async function planBranchAction(now, branch, filters, commitComments, params) {
             lastCommentTime: latestStaleComment,
         };
     }
-    return {
+    const removalPlan = {
         action: "remove",
         comments,
         cutoffTime,
         lastCommentTime: latestStaleComment,
     };
+    if (params.closeOpenPrsBeforeBranchDelete && branch.hasMoreOpenPullRequests) {
+        return skip(`branch ${branch.branchName} has more associated open PRs than can be closed safely in one run`);
+    }
+    return removalPlan;
 }
 function logActionRunConfiguration(params, staleCutoff, removeCutoff) {
     if (params.isDryRun) {

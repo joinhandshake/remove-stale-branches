@@ -22,7 +22,8 @@ export type PullRequest = {
   number: number;
   updatedAt: number;
   baseRefName: string;
-  labels: string[];
+  hasStaleLabel: boolean;
+  staleLabelAppliedAt: number | null;
 };
 
 export type Params = {

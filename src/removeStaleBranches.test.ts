@@ -264,14 +264,59 @@ describe("removeStaleBranches", () => {
       yield branch;
     });
 
-    const request = jest.fn();
+    const request = jest.fn(async (route: string) => {
+      if (route === "GET /repos/{owner}/{repo}/commits/{commit_sha}/comments") {
+        return {
+          data: [
+            {
+              body: "[stale:many-open-prs]\\r\\n\\r\\nalready marked",
+              created_at: new Date(
+                Date.now() - 15 * 24 * 60 * 60 * 1000,
+              ).toISOString(),
+              id: 1,
+            },
+          ],
+        };
+      }
+      return { data: {} };
+    });
 
     await removeStaleBranches({ request } as unknown as Octokit, {
       ...params(),
       closeOpenPrsBeforeBranchDelete: true,
     });
 
-    expect(request).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalledWith(
+      "DELETE /repos/{owner}/{repo}/git/refs/{ref}",
+      expect.anything(),
+    );
+  });
+
+  test("still marks a branch stale when it has more open PRs than can be closed", async () => {
+    const branch = {
+      ...staleBranch("many-open-prs", "sha-1"),
+      hasMoreOpenPullRequests: true,
+    };
+    mockedReadBranches.mockImplementation(async function* () {
+      yield branch;
+    });
+
+    const request = jest.fn(async (route: string) => {
+      if (route === "GET /repos/{owner}/{repo}/commits/{commit_sha}/comments") {
+        return { data: [] };
+      }
+      return { data: {} };
+    });
+
+    await removeStaleBranches({ request } as unknown as Octokit, {
+      ...params(),
+      closeOpenPrsBeforeBranchDelete: true,
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "POST /repos/{owner}/{repo}/commits/{commit_sha}/comments",
+      expect.objectContaining({ commit_sha: "sha-1" }),
+    );
   });
 
   test("marks inactive PRs across every base branch before closing them", async () => {
@@ -281,7 +326,8 @@ describe("removeStaleBranches", () => {
         number: 42,
         updatedAt: Date.now() - 120 * 24 * 60 * 60 * 1000,
         baseRefName: "release/legacy",
-        labels: [],
+        hasStaleLabel: false,
+        staleLabelAppliedAt: null,
       };
     });
 
@@ -305,7 +351,8 @@ describe("removeStaleBranches", () => {
         number: 42,
         updatedAt: Date.now() - 120 * 24 * 60 * 60 * 1000,
         baseRefName: "release/legacy",
-        labels: ["stale"],
+        hasStaleLabel: true,
+        staleLabelAppliedAt: null,
       };
     });
 
@@ -329,7 +376,8 @@ describe("removeStaleBranches", () => {
         number: 42,
         updatedAt: Date.now(),
         baseRefName: "release/legacy",
-        labels: ["stale"],
+        hasStaleLabel: true,
+        staleLabelAppliedAt: null,
       };
     });
 
@@ -344,5 +392,53 @@ describe("removeStaleBranches", () => {
       "DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}",
       expect.objectContaining({ issue_number: 42, name: "stale" }),
     );
+  });
+
+  test("closes a labelled PR when adding the label was its last update", async () => {
+    mockedReadBranches.mockImplementation(async function* () {});
+    mockedReadOpenPullRequests.mockImplementation(async function* () {
+      yield {
+        number: 42,
+        updatedAt: Date.now(),
+        baseRefName: "release/legacy",
+        hasStaleLabel: true,
+        staleLabelAppliedAt: Date.now(),
+      };
+    });
+
+    const request = jest.fn(async () => ({ data: {} }));
+
+    await removeStaleBranches({ request } as unknown as Octokit, {
+      ...params(),
+      closeStalePullRequests: true,
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+      expect.objectContaining({ pull_number: 42, state: "closed" }),
+    );
+  });
+
+  test("does not mutate pull requests when their operations limit is zero", async () => {
+    mockedReadBranches.mockImplementation(async function* () {});
+    mockedReadOpenPullRequests.mockImplementation(async function* () {
+      yield {
+        number: 42,
+        updatedAt: Date.now() - 120 * 24 * 60 * 60 * 1000,
+        baseRefName: "release/legacy",
+        hasStaleLabel: false,
+        staleLabelAppliedAt: null,
+      };
+    });
+
+    const request = jest.fn(async () => ({ data: {} }));
+
+    await removeStaleBranches({ request } as unknown as Octokit, {
+      ...params(),
+      closeStalePullRequests: true,
+      pullRequestOperationsPerRun: 0,
+    });
+
+    expect(request).not.toHaveBeenCalled();
   });
 });
