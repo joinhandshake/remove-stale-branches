@@ -127,6 +127,28 @@ inputs:
     description: "Whether to ignore branches with open pull requests."
     default: "false"
     required: false
+  close-open-prs-before-branch-delete:
+    description: >
+      Whether to close associated open pull requests before deleting a stale
+      branch. Requires pull-requests: write permission. When closing a PR
+      fails, the branch is left intact for a later retry.
+    default: "false"
+    required: false
+  close-stale-pull-requests:
+    description: >
+      Whether to mark inactive open PRs stale, then close them on a later run.
+      PR activity is evaluated across every base branch. Requires issues: write
+      and pull-requests: write permission.
+    default: "false"
+    required: false
+  stale-pull-request-label:
+    description: "Existing label used to mark an inactive PR before closing it."
+    default: "stale"
+    required: false
+  pull-request-operations-per-run:
+    description: "Maximum number of PR labels or closures to perform in one run."
+    default: "10"
+    required: false
   remap-authors:
     description: "A JSON mapping overriding some commit authors to Github usernames. The remapped names will be used in the comments."
     required: false

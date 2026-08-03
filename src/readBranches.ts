@@ -12,9 +12,10 @@ const GRAPHQL_QUERY = `query ($repo: String!, $owner: String!, $after: String) {
       edges {
         node {
           name
-          associatedPullRequests(first: 1, states: OPEN) {
+          associatedPullRequests(first: 100, states: OPEN) {
+            totalCount
             nodes {
-              state
+              number
             }
           }
           prefix
@@ -55,9 +56,10 @@ const GRAPHQL_QUERY_WITH_ORG = `query ($repo: String!, $owner: String!, $organiz
       edges {
         node {
           name
-          associatedPullRequests(first: 1, states: OPEN) {
+          associatedPullRequests(first: 100, states: OPEN) {
+            totalCount
             nodes {
-              state
+              number
             }
           }
           prefix
@@ -143,11 +145,10 @@ type Ref = {
   id: unknown;
   name: string;
   associatedPullRequests: {
-    nodes: [
-      {
-        state: "OPEN";
-      },
-    ];
+    totalCount: number;
+    nodes: Array<{
+      number: number;
+    }>;
   };
   prefix: string;
   refUpdateRule: unknown | null;
@@ -218,7 +219,12 @@ export async function* readBranches(
         commitId: oid,
         author: branchAuthor,
         isProtected: refUpdateRule !== null,
-        openPrs: associatedPullRequests.nodes.length > 0,
+        openPullRequestNumbers: associatedPullRequests.nodes.map(
+          ({ number }) => number,
+        ),
+        hasMoreOpenPullRequests:
+          associatedPullRequests.totalCount >
+          associatedPullRequests.nodes.length,
       };
     }
     pagination = pageInfo;

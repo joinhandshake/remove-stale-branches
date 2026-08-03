@@ -3,7 +3,8 @@ export type Branch = {
   branchName: string;
   prefix: string;
   commitId: string;
-  openPrs: boolean;
+  openPullRequestNumbers: number[];
+  hasMoreOpenPullRequests: boolean;
   author: {
     username: string | null;
     email: string | null;
@@ -15,6 +16,14 @@ export type Branch = {
 export type Repo = {
   repo: string;
   owner: string;
+};
+
+export type PullRequest = {
+  number: number;
+  updatedAt: number;
+  baseRefName: string;
+  hasStaleLabel: boolean;
+  staleLabelAppliedAt: number | null;
 };
 
 export type Params = {
@@ -37,4 +46,8 @@ export type Params = {
   defaultRecipient: string | null;
   remapAuthors: { [key: string]: string };
   ignoreBranchesWithOpenPRs: boolean;
+  closeOpenPrsBeforeBranchDelete: boolean;
+  closeStalePullRequests: boolean;
+  stalePullRequestLabel: string;
+  pullRequestOperationsPerRun: number;
 };

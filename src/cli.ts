@@ -29,6 +29,10 @@ removeStaleBranches(octokit, {
     repo: "octocat",
   },
   ignoreBranchesWithOpenPRs: false,
+  closeOpenPrsBeforeBranchDelete: false,
+  closeStalePullRequests: false,
+  stalePullRequestLabel: "stale",
+  pullRequestOperationsPerRun: 10,
   remapAuthors: {},
 })
   .then(() => clearTimeout(timer))
