@@ -256,12 +256,18 @@ async function processStalePullRequests(
   }
 
   let mutatedPullRequests = 0;
+  const seenPullRequests = new Set<number>();
   for await (const pullRequest of readOpenPullRequests(
     octokit,
     headers,
     repo,
     params.stalePullRequestLabel,
   )) {
+    if (seenPullRequests.has(pullRequest.number)) {
+      continue;
+    }
+    seenPullRequests.add(pullRequest.number);
+
     const plan = planPullRequestAction(pullRequest, staleCutoff);
     if (plan === "skip") {
       continue;
