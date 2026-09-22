@@ -344,6 +344,55 @@ describe("removeStaleBranches", () => {
     );
   });
 
+  test("does not close a PR that reappears after it was labelled in this run", async () => {
+    mockedReadBranches.mockImplementation(async function* () {});
+    mockedReadOpenPullRequests.mockImplementation(async function* () {
+      yield {
+        number: 42,
+        updatedAt: Date.now() - 120 * 24 * 60 * 60 * 1000,
+        baseRefName: "main",
+        hasStaleLabel: false,
+        staleLabelAppliedAt: null,
+      };
+      yield {
+        number: 42,
+        updatedAt: Date.now(),
+        baseRefName: "main",
+        hasStaleLabel: true,
+        staleLabelAppliedAt: Date.now(),
+      };
+      yield {
+        number: 43,
+        updatedAt: Date.now() - 120 * 24 * 60 * 60 * 1000,
+        baseRefName: "main",
+        hasStaleLabel: false,
+        staleLabelAppliedAt: null,
+      };
+    });
+
+    const request = jest.fn(async () => ({ data: {} }));
+
+    await removeStaleBranches({ request } as unknown as Octokit, {
+      ...params(),
+      closeStalePullRequests: true,
+      pullRequestOperationsPerRun: 2,
+    });
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledWith(
+      "POST /repos/{owner}/{repo}/issues/{issue_number}/labels",
+      expect.objectContaining({ issue_number: 42, labels: ["stale"] }),
+    );
+    expect(request).toHaveBeenCalledWith(
+      "POST /repos/{owner}/{repo}/issues/{issue_number}/labels",
+      expect.objectContaining({ issue_number: 43, labels: ["stale"] }),
+    );
+    expect(request).not.toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+      expect.anything(),
+    );
+  });
+
   test("closes labelled inactive PRs across every base branch", async () => {
     mockedReadBranches.mockImplementation(async function* () {});
     mockedReadOpenPullRequests.mockImplementation(async function* () {

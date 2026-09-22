@@ -30581,7 +30581,12 @@ async function processStalePullRequests(octokit, headers, repo, staleCutoff, com
         return;
     }
     let mutatedPullRequests = 0;
+    const seenPullRequests = new Set();
     for await (const pullRequest of (0, readPullRequests_1.readOpenPullRequests)(octokit, headers, repo, params.stalePullRequestLabel)) {
+        if (seenPullRequests.has(pullRequest.number)) {
+            continue;
+        }
+        seenPullRequests.add(pullRequest.number);
         const plan = planPullRequestAction(pullRequest, staleCutoff);
         if (plan === "skip") {
             continue;
